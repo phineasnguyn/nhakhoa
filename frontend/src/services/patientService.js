@@ -50,7 +50,7 @@ class PatientService {
   }
 
   /**
-   * Delete patient (soft delete)
+   * Permanently delete patient and all related data
    */
   async deletePatient(id) {
     const response = await apiClient.delete(`/patients/${id}`);

@@ -71,7 +71,7 @@ export const useUpdatePatient = () => {
 
 /**
  * useDeletePatient Hook
- * Delete patient (soft delete)
+ * Permanently delete patient and all related data
  */
 export const useDeletePatient = () => {
   const queryClient = useQueryClient();

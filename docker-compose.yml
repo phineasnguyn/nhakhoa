@@ -40,6 +40,19 @@ services:
       timeout: 20s
       retries: 3
 
+  redis:
+    image: redis:7-alpine
+    container_name: nhakhoa-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   image-processor:
     build: ./image-processing-service
@@ -85,9 +98,13 @@ services:
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
       MINIO_BUCKET: nhakhoa
       IMAGE_PROCESSING_SERVICE_URL: http://image-processor:8001
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
     ports:
       - "3000:3000"
-    # depends_on:
+    depends_on:
+      redis:
+        condition: service_healthy
     #   postgres:
     #     condition: service_healthy
     #   minio:
@@ -126,6 +143,8 @@ volumes:
   minio_data:
     driver: local
   processor_temp:
+    driver: local
+  redis_data:
     driver: local
 
 # networks:
