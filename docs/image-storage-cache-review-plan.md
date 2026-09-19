@@ -1,162 +1,156 @@
-# Kế hoạch hợp nhất ảnh RAW và chế độ hiển thị processed
+# Kế hoạch tối ưu lưu trữ và hiển thị ảnh
 
-Ngày kiểm tra: 18/09/2026. Mã nguồn: commit `2885562`.
+Rà soát cuối: 19/09/2026. Trạng thái: **sẵn sàng triển khai code và kiểm thử bằng dữ liệu dev; chưa đủ điều kiện chuyển đổi hoặc xóa ảnh trên môi trường dữ liệu thật**.
 
-Tài liệu được chuyển vào `docs` ngày 19/09/2026, cùng quy ước đặt tên với `docs/delete-patient-cascade-implementation.md` trên branch `feature/delete-patient`.
+## 1. Branch, môi trường và phạm vi
 
-## Branch và quy trình PR
+- Branch: `feature/image-storage-optimization`, từ `cuddles47/nhakhoa:dev` tại `aa93d0e`. Sau fetch ngày rà soát, base vẫn là commit này.
+- Push lên `phineasnguyn/nhakhoa`; PR sau triển khai nhắm vào `cuddles47/nhakhoa:dev`.
+- VM: `192.168.1.151`, workspace hiện tại `/home/dev_phien/nhakhoa`. Thư mục cũ `nhakhoa-delete-patient` đã được đổi tên.
+- Compose project giữ tên `nhakhoa-dev`; cấu hình riêng của VM và credential không đưa vào Git.
+- Các container cũ đang dừng vẫn giữ bind mount/label đường dẫn cũ. Khi chạy kiểm thử, recreate bằng Compose từ workspace mới; không dùng `docker start` trực tiếp.
+- `/projects/nhakhoa` là checkout khác. Số liệu MinIO/Redis từ stack đó không phải baseline của stack dev này.
 
-- Branch mới: `feature/image-storage-optimization`, tạo từ `cuddles47/nhakhoa:dev` tại commit `aa93d0e`, cùng quy trình xuất phát như `feature/delete-patient`.
-- Nhánh delete-patient chưa được gộp vào `dev` tại thời điểm tạo branch. Branch tối ưu ảnh không mang theo các commit của feature đó; các phát hiện về worker/outbox trong báo cáo là từ mã đã kiểm tra tại `2885562`, không có nghĩa toàn bộ các thành phần này đã nằm trên branch mới. Khi triển khai phải kiểm tra lại dependency, chỉ đưa vào phần dùng chung thực sự cần thiết hoặc cập nhật base sau khi feature trước được merge.
-- Remote làm PR: push branch vào `phineasnguyn/nhakhoa`, sau đó mở PR từ `phineasnguyn:feature/image-storage-optimization` tới `cuddles47/nhakhoa:dev` khi tính năng và kiểm thử sẵn sàng. Chưa tạo PR trong bước chuẩn bị này.
-- Workspace VM đã đổi tên ngày 19/09/2026: `/home/dev_phien/nhakhoa` trên `192.168.1.151`. Những đường dẫn `nhakhoa-delete-patient` bên dưới là đường dẫn lịch sử tại thời điểm kiểm kê.
-- Giữ Compose project name `nhakhoa-dev` để tiếp tục dùng đúng volume/network hiện có. Các container đang dừng vẫn mang bind mount/label đường dẫn cũ; lần khởi chạy tiếp theo phải dùng Compose từ thư mục mới để recreate container, không dùng `docker start` trực tiếp các container cũ. Chưa khởi động/recreate container trong bước đổi tên.
-- `.env.db`, `compose.dev.yml`, `compose.db-external.yml` và thay đổi Vite riêng trên VM được giữ lại ngoài commit tài liệu; không đưa credential hay cấu hình riêng của VM vào PR.
+**Quyết định sau rà soát:** giữ luồng HTTP đồng bộ đang có trên base. Không đưa BullMQ, worker hoặc toàn bộ feature delete-patient vào PR tối ưu ảnh. Tách tính toán/lưu annotations thành service được controller gọi trực tiếp; sau này worker có thể gọi cùng service nếu queue được merge.
 
-### Môi trường đã xác nhận ngày 19/09/2026
+Mục tiêu bắt buộc: một bitmap nguồn đang được sử dụng cho mỗi ảnh logic, chế độ processed là ảnh nguồn cộng overlay; xử lý và sửa nhãn không tạo bitmap processed. Ảnh stained, augmentation và phiên bản ảnh phát sinh do thay/xoay là nội dung khác, không gộp với RAW bằng dedup theo hình thức hiển thị.
 
-- SSH vào `192.168.1.151` với tài khoản `dev_phien`; dự án đúng là `/home/dev_phien/nhakhoa-delete-patient`, branch `feature/delete-patient`, commit `2885562`.
-- Stack Docker đúng: `nhakhoa-dev`, dùng `compose.dev.yml` và `compose.db-external.yml`; DB đích `192.168.1.155:5432/dental_db`. Backend publish cổng 3100, frontend 4104, MinIO 9100/9101. Redis dùng service nội bộ `redis:6379`.
-- `/projects/nhakhoa` là checkout khác, branch `duc/allow_yolo_input`, commit `bed223d` và có thay đổi chưa commit. Những phép đo MinIO/Redis của stack `nhakhoa-*` từ lần xác định nhầm thư mục không được dùng làm baseline cho stack `nhakhoa-dev`.
-- Docker local Windows không đại diện cho máy chủ, không cần khôi phục Docker local để kiểm tra dữ liệu này.
-- `.env.db` và biến môi trường trong container `nhakhoa-dev-backend-1` cùng chứa credential bị DB từ chối với mã `28P01`. Đã kết nối thành công bằng credential từ `backend/.env` của đúng dự án, kết hợp host/port/database đích từ `.env.db`, chỉ trong bộ nhớ tiến trình kiểm tra; không sửa file cấu hình.
-- PostgreSQL xác nhận `inet_server_addr() = 192.168.1.155/32`, database `dental_db`, `pg_is_in_recovery() = false`. Các truy vấn chạy trong transaction `READ ONLY`, có statement timeout.
+## 2. Hiện trạng xác minh
 
-### Số liệu DB và Docker của đúng dự án
+### 2.1 Mã nguồn hiện tại và khác biệt với lần kiểm tra đầu
 
-| Hạng mục | Kết quả ngày 19/09/2026 |
+| Vị trí trên base hiện tại | Phát hiện |
 | --- | --- |
-| Ảnh RAW | 116 hàng; 54 có `url_processed`; 36 URL processed phân biệt |
-| Ảnh stained | 27 hàng, không có URL processed |
-| Kích thước ảnh | RAW không thiếu; cả 27 stained thiếu width/height hợp lệ |
-| Annotations | 1.237 hàng, gồm 477 subbox; 12 hàng có `annotated_by` |
-| Ảnh processed thiếu dữ liệu | 21/54 không có subbox; trong đó 8/54 không có annotation nào |
-| Processing jobs | Bảng tồn tại nhưng không có hàng |
-| Storage deletion outbox | Chưa có bảng `public.storage_deletion_jobs` trên DB đích |
-| Docker dev | Cả 6 container backend/frontend/postgres/redis/minio/image-processor đang `exited`; `OOMKilled=false` ở cả 6 |
+| `backend/src/controllers/ImageProcessingController.js` | Xử lý ngay trong HTTP request: tải RAW, gửi Python, nhận ZIP, upload `processed_by_hash`, ghi `url_processed`; trả HTTP 200 và mảng ảnh. Không enqueue job. |
+| Cùng controller, `_parseAndSaveSubboxes` | Xóa subbox không phải YOLO trước khi ghi lại; có thể mất ID/nhãn/history. Dùng kích thước trung gian 1024, ánh xạ parent theo class ID và tên vùng theo thứ tự. Có dummy annotations khi thiếu dữ liệu. |
+| `image-processing-service/processors/tooth_divider.py` | Tính bốn vùng bằng bbox răng/mắc cài; vẽ khung và ghi ảnh; gán class ngẫu nhiên. Chưa có suy luận plaque thật trong bước này. |
+| `ProcessedImageViewer.jsx`, `AnnotationCanvas.jsx` | Thumbnail và lightbox chọn bitmap processed; canvas tiếp tục vẽ khung lên ảnh đã có khung. |
+| `frontend/src/components/ImageUpload.jsx` | Hai luồng tạo URL dùng `Date.now()`; lần tải danh sách mới làm thay cache key dù nội dung không đổi. |
+| `backend/src/routes/api.js`, `services/storage.js` | Proxy tải toàn bộ object vào buffer, cache HTTP 1 giờ. |
+| `backend/src/controllers/ImageController.js` | Xoay ảnh ghi đè object, xóa subbox nhưng giữ nguyên bbox cha và chưa cập nhật width/height; chỉ đổi cache key sẽ không khắc phục tọa độ sai. |
+| `backend/src/services/annotationService.js` | YOLO upload có subbox riêng, thậm chí tạo parent từ subbox; không được coi các dữ liệu này là đầu vào cần sinh lại bằng Python. |
+| `backend/src/services/datasetExportService.js` | Export dùng RAW. Nhánh COCO kiểm tra chuỗi `'plaque'` trong khi DB dùng số 0/1: cần regression test và sửa mapping tại chỗ, không làm lại toàn bộ export. |
+
+Worker `imageProcessor.js`, `processedImageReferenceService.js`, `storageDeletionService.js`, queue và migration 008–010 đã đọc ở lần đầu thuộc `feature/delete-patient` tại `2885562`, **không nằm trên branch hiện tại**. Vì vậy không dùng tên file/luồng worker đó làm điểm sửa trực tiếp và không coi migration 010 là điều kiện để bắt đầu feature này.
+
+Không có Redis image cache trong mã nguồn base; cũng chưa có BullMQ trong dependencies của base. Nhận định “Redis tốn RAM gấp đôi vì RAW/processed” chưa được chứng minh.
+
+### 2.2 Dữ liệu đã kiểm tra trên DB .155 ngày 19/09/2026
+
+Truy vấn từ đúng workspace trên .151, bằng PostgreSQL transaction `READ ONLY` có timeout. Server xác nhận `192.168.1.155/32`, database `dental_db`, không phải replica.
+
+| Hạng mục | Kết quả |
+| --- | --- |
+| RAW | 116 hàng; 54 có URL processed; 36 URL processed phân biệt |
+| Stained | 27 hàng; không có URL processed |
+| Width/height | RAW đầy đủ; 27 stained thiếu kích thước hợp lệ |
+| Annotations | 1.237 hàng; 477 subbox; 12 hàng có `annotated_by` |
+| Processed thiếu annotations | 21/54 không có subbox; trong đó 8/54 không có annotation nào |
+| Processing jobs | Bảng tồn tại nhưng rỗng |
+| Storage deletion outbox | Bảng `storage_deletion_jobs` chưa tồn tại |
+| Docker đúng stack | Cả 6 container `nhakhoa-dev` đang dừng, không ghi nhận OOMKilled |
 | MinIO dev | Volume `nhakhoa-dev_dev_minio`, bucket `nhakhoa` tồn tại nhưng rỗng |
-| Redis dev | Container đã dừng; không có số đo live memory/keyspace cho đúng stack |
+| Redis dev | Đã dừng; chưa có số đo live memory/keyspace |
 
-Bucket dev được kiểm tra bằng container kiểm kê tạm dùng image đã có, `--network none`, root filesystem read-only và mount volume MinIO read-only; container được tự xóa sau khi hoàn tất. Không khởi động ứng dụng/worker/Redis/MinIO dev và không ghi dữ liệu vào volume.
+Bucket được đọc qua mount read-only trong container kiểm kê tạm không có network. Không khởi động ứng dụng, không chạy migration hoặc xóa dữ liệu thật.
 
-36 URL processed phân biệt là số tham chiếu trong PostgreSQL, chưa phải số object đã xác minh trong MinIO của đúng môi trường. Bucket dev rỗng cho thấy cấu hình ghép DB thật với MinIO dev chưa cung cấp bộ ảnh tương ứng. Không kết luận 21 ảnh không có subbox đều bị lỗi: có thể là kết quả rỗng hợp lệ hoặc thiếu dữ liệu; phải phân loại trước migration.
+Credential trong `.env.db` và container dev bị từ chối với `28P01`. Credential trong `backend/.env` của đúng workspace kết nối được khi dùng host/port/database của `.env.db`, chỉ ghi đè trong bộ nhớ tiến trình kiểm tra. Chưa sửa file cấu hình.
 
-### Điều kiện cần giải quyết trước P0 và triển khai
+36 URL không đồng nghĩa 36 object tồn tại trong bucket dev. Bucket rỗng và DB có ảnh là cấu hình dữ liệu chưa đồng bộ. Không tự coi 21 ảnh thiếu subbox là lỗi: phải phân biệt chưa có dữ liệu, kết quả rỗng hợp lệ và dữ liệu bị mất.
 
-1. Đồng bộ credential DB cho `.env.db`/container theo nguồn credential hợp lệ; không ghi bí mật vào Git hoặc báo cáo.
-2. Xác định MinIO chứa ảnh tương ứng DB `.155` và chọn rõ môi trường kiểm thử: trỏ tới kho phù hợp hoặc chuẩn bị bộ dữ liệu dev đồng bộ. Chưa tự đổi endpoint hoặc sao chép dữ liệu.
-3. Kiểm tra migration `010_create_storage_deletion_outbox.sql` và các migration/phụ thuộc của branch trước khi sử dụng GC/xóa bệnh nhân. Đợt kiểm tra không chạy migration trên DB đích.
-4. Phân loại 21 ảnh processed chưa có subbox, đặc biệt 8 ảnh không có annotations; giữ bitmap cũ đến khi dữ liệu overlay thay thế được xác minh. Bảo toàn 12 annotations đã có người gán nhãn.
-5. Sau khi môi trường thống nhất, mới đo object/byte trên MinIO và RAM/keyspace của đúng Redis. Các con số dung lượng của stack khác không thay thế được bước này.
+## 3. Các quyết định kỹ thuật đã chốt
 
-### Kiểm tra lại Docker ngày 19/09/2026
+### 3.1 Ảnh nền và trạng thái xử lý
 
-- Docker CLI hoạt động: phiên bản `29.6.2`, build `dfc4efb`.
-- Tiến trình Docker Desktop/backend đang chạy, nhưng `wsl --list --verbose` báo distro `docker-desktop` ở trạng thái `Stopped`.
-- Log backend lúc 18:52:44 (Asia/Saigon) ghi engine `linux/wsl` chuyển từ `stopped` sang `starting`; tại thời điểm kiểm tra chưa xác nhận engine sẵn sàng.
-- Lệnh truy vấn engine/container không trả kết quả trong thời gian kiểm tra. Chưa đọc được danh sách container, trạng thái Redis/MinIO hay số đo dung lượng runtime.
-- Log Docker Desktop ghi lần backend trước thoát với status 1 lúc 18:50:42, sau đó khởi chạy lại lúc 18:52:43. Chưa đủ bằng chứng để kết luận nguyên nhân gốc.
-- Nếu kiểm tra môi trường local thì cần khôi phục engine Linux/WSL. Bước P0 cho dữ liệu máy chủ phải thực hiện qua SSH như mô tả phía trên. Đợt kiểm tra này không restart/reset Docker hoặc thay đổi volume/container.
+- Giữ một `images.id`, một `images.url` làm ảnh nguồn; không tạo hàng ảnh riêng cho processed, không gán giả `url_processed = url`.
+- API trả trạng thái hiển thị rõ: `raw`, `legacy_bitmap`, `overlay`, và lý do cần kiểm tra nếu có. Chỉ cho `overlay` khi metadata đã được xác thực cho revision ảnh hiện tại.
+- Đề xuất migration cộng thêm: `image_revision` mặc định 1; `annotation_revision` mặc định 0; `processed_image_revision` nullable; `overlay_schema_version` nullable. Giữ `url_processed`, `processing_status`, `processed_at` trong giai đoạn tương thích.
+- `completed` + revision khớp + schema overlay hợp lệ mới chứng minh kết quả overlay sẵn sàng. Kết quả rỗng chỉ được đánh dấu hợp lệ khi đã xác nhận nguồn annotations hợp lệ; thiếu input không được giả thành kết quả âm tính.
+- Tên migration mới tránh chiếm số 008–010 của feature delete-patient, ví dụ `011_add_image_overlay_metadata.sql`; idempotent, chạy thử cả database mới và database hiện có. Không giả định thêm file init sẽ tự migrate volume cũ.
 
-## 1. Kết luận và giới hạn kiểm tra
+### 3.2 Contract tính hình học
 
-- Luồng divide-corners thực sự lưu thêm bitmap đã vẽ khung vào MinIO; đây là dữ liệu dẫn xuất có thể thay bằng overlay.
-- Cùng một hàng `images` chứa `url` và `url_processed`; không phải luồng này tạo hai hàng ảnh trong PostgreSQL.
-- Chưa có bằng chứng Redis lưu hai bản ảnh. Mã nguồn dùng Redis cho BullMQ, payload enqueue chỉ có `visitId`, `userId`; kết quả job là số đếm và ID. Không tìm thấy cache binary/base64 ảnh trên Redis.
-- Dung lượng tăng không nhất thiết đúng 2 lần: ảnh processed được mã hóa lại, có thể khác kích thước file, chia sẻ hash, hoặc tồn tại nhiều phiên bản mồ côi. Chưa đo được mức tăng thực tế.
-- Phần mã nguồn được kiểm tra ngày 18/09; DB đích và Docker đúng dự án đã đối chiếu ngày 19/09 như các bảng phía trên. Chưa đo dung lượng bitmap thật do MinIO dev rỗng và chưa đo live Redis dev vì container đang dừng.
-- Chưa sửa luồng ứng dụng, chưa chạy migration hoặc xóa dữ liệu. File này là báo cáo và kế hoạch triển khai.
+- Thêm endpoint Python nhận JSON metadata, không nhận ảnh: image ID/revision, width/height, bbox răng và mắc cài cùng **annotation ID thật**.
+- Chỉ đưa parent teeth/brackets vào bộ tính; subbox hiện có không trở thành “răng” mới. Bỏ dummy annotations. Không tải COCO ở controller nếu không dùng kết quả.
+- Trả parent annotation ID, bbox pixel `[x,y,w,h]`, mã vùng không nhập nhằng, số vùng và lỗi theo từng ảnh. Không dùng class răng làm khóa duy nhất vì nhiều parent có thể cùng class.
+- Hệ tọa độ là ảnh nguồn đã xác minh orientation và kích thước thực; không qua bước làm tròn 1024×1024. Thiếu kích thước thì đọc metadata ảnh một lần; không đoán 6240×4160.
+- Mã vùng mới dùng vị trí ảnh `top/bottom/left/right`. Không suy diễn tên giải phẫu G/I/M/D khi chưa có hướng chụp đầy đủ. Dữ liệu cũ `top_left/...` giữ nguyên; chỉ ánh xạ khi đã xác minh hình học/nguồn tạo, không đổi tên hàng loạt.
+- Giữ nguyên quy tắc chọn mắc cài của thuật toán hiện có cho ca không nhập nhằng; trường hợp nhiều ứng viên, bbox vượt biên hoặc vùng có diện tích <= 0 phải trả lý do cần kiểm tra. Chỉ yêu cầu đủ bốn vùng với cặp răng–mắc cài hợp lệ.
+- Metadata endpoint không gọi hàm vẽ, `cv2.imwrite`, không tạo ZIP, không sinh prediction ngẫu nhiên. Endpoint cũ chỉ giữ trong giai đoạn tương thích; augmentation không đổi.
 
-## 2. Bằng chứng trong mã nguồn
+### 3.3 Nhãn, reprocess và đồng thời
 
-| Vị trí | Hiện trạng và tác động |
+- Bảo toàn annotation ID, quan hệ parent, `plaque_status`, `annotated_by`, `annotated_at`, `annotation_history` và nhãn YOLO đã nhập. Không delete/reinsert các subbox đã có nhãn.
+- Không đổi quy ước 0/1 hoặc mặc định `plaque_status=1` đang có cho subbox sinh tự động trong PR tối ưu. Giá trị mặc định không được coi là bác sĩ đã xác nhận. Giữ nguyên null nếu có; prediction mới chưa có mô hình thì null. Loại bỏ ngẫu nhiên ở đường xử lý mới.
+- Upsert hình học theo parent ID + vùng đã xác minh. Không cập nhật đè bbox/nhãn YOLO được nhập; nếu nguồn mâu thuẫn, trả cần kiểm tra thay vì tự sửa. Không thêm unique index lên dữ liệu cũ trước khi kiểm tra trùng/khác quy ước vùng.
+- Mỗi ảnh dùng một transaction trên cùng DB client: kiểm tra ảnh/visit/patient còn hiệu lực, đối chiếu revision đầu vào, lưu annotations rồi mới đặt completed và revision kết quả.
+- Mọi đường sửa annotations liên quan phải tăng `annotation_revision` trong cùng transaction, gồm sửa nhãn đơn/batch, import và xử lý. Kết quả tính từ snapshot cũ bị từ chối nếu image/annotation revision đã đổi; không ghi đè thay đổi bác sĩ vừa lưu.
+- Trước khi bật writer mới trên dữ liệu dùng chung, tất cả ứng dụng có quyền sửa cùng ảnh/annotations phải tuân thủ revision này hoặc được ngừng ghi trong phạm vi chuyển đổi. Chỉ sửa writer của workspace mới không bảo vệ được trước một ứng dụng cũ vẫn ghi vào DB .155 mà không tăng revision.
+- Với request xử lý đồng thời, chỉ một kết quả snapshot được commit. HTTP trả kết quả từng ảnh và số completed/failed/review-required thật; không báo toàn visit thành công chỉ vì Python trả một số file.
+- Giữ HTTP đồng bộ và trường `data` là mảng ảnh để tương thích client hiện có; bổ sung summary/results và cập nhật UI kiểm tra partial. Không thêm jobId/polling/HTTP 202 trong feature này.
+
+### 3.4 Cache và thay/xoay ảnh
+
+- RAW và overlay dùng cùng URL ổn định có version nội dung; sửa nhãn chỉ đổi annotation revision, không đổi URL ảnh.
+- Tất cả đường upload/replace/rotate phải cập nhật revision và kích thước; các URL presigned, tương đối và proxy phải chuẩn hóa về cùng object identity, không gắn timestamp theo lần tải.
+- Proxy thêm ETag/conditional GET từ metadata MinIO; chỉ mở body stream khi cần và xử lý ngắt kết nối/backpressure. Query `v=` tự nó không phải bảo đảm nội dung bất biến: không gắn `immutable` lên object key còn bị ghi đè. Cache policy phải phù hợp cơ chế xác thực đang triển khai.
+- Renderer dùng cùng ảnh nền, lớp overlay riêng, backing store theo kích thước hiển thị/DPR; hover không decode hay vẽ lại toàn bộ ảnh gốc. Có cleanup khi đóng viewer.
+- Với xoay 90/180/270°, transform đồng bộ bbox của cả răng, mắc cài và subbox, cập nhật width/height, giữ ID/nhãn/history. Hệ tọa độ EXIF/display phải thống nhất; input không đủ để xác định transform thì từ chối thao tác thay vì xóa nhãn.
+- Mã vùng theo vị trí ảnh của dữ liệu mới phải đổi tương ứng sau xoay; giữ ID của vùng cùng nhãn đi theo bbox đã transform, không gán nhãn cũ sang vùng khác chỉ vì tên top/left đổi.
+- Không tự reprocess rồi xóa nhãn sau xoay. Nếu cần tính lại hình học, thực hiện qua cơ chế giữ nhãn và revision ở trên.
+- Tránh trạng thái “object đã bị ghi đè nhưng transaction DB thất bại”: upload ảnh xoay thành object nguồn phiên bản mới, sau đó CAS tham chiếu DB/revision; thất bại thì giữ nguồn cũ và ghi nhận object mới cần dọn. Phiên bản cũ giữ tạm cho rollback, không phải bitmap overlay dư thừa.
+
+### 3.5 Đọc dữ liệu cũ và thu hồi dung lượng
+
+- Viewer hỗ trợ cả legacy bitmap và RAW + overlay. Ảnh chưa đủ annotations tiếp tục dùng bitmap cũ, **không vẽ thêm canvas lên bitmap đó**. Lỗi tải annotations không được hiển thị RAW như thể overlay đã hoàn tất.
+- Đánh dấu overlay-ready theo từng ảnh sau xác minh; không chỉ đếm “có 4 subbox”. Nhóm YOLO hợp lệ có thể dùng bbox nhập sẵn dù không có bbox mắc cài để sinh lại.
+- Không mặc định tái sử dụng outbox chưa có trên branch. Chuẩn bị công cụ quản trị cleanup riêng: dry-run là mặc định, manifest có DB identity, bucket/endpoint, image/revision, object key, size/ETag, URL cũ và trạng thái từng bước. Manifest chứa tham chiếu dữ liệu thật lưu ngoài Git.
+- Lập manifest trước khi bỏ tham chiếu legacy; chỉ xóa các object của ảnh đã chuyển đổi được xác minh, hết thời gian giữ rollback. Gộp theo object identity vì 54 tham chiếu hiện chỉ có 36 URL khác nhau.
+- Trước apply, kiểm tra tất cả DB/app dùng chung bucket, mọi tham chiếu ảnh/annotations kể cả soft-delete. Chưa rõ có consumer khác thì không đưa object đó vào danh sách xóa.
+- Base hiện chưa có giao thức khóa chung với writer cũ. Cleanup chỉ chạy trong cửa sổ bảo trì đã dừng và drain các writer liên quan; khóa trong một DB không bảo vệ writer của ứng dụng khác. Nếu delete-patient được merge trước lúc triển khai GC, có thể dùng outbox/lock của nó sau khi kiểm tra lại tích hợp.
+- Xóa có checkpoint, retry idempotent, stat lại ETag/version trước xóa. Bucket có versioning phải thống kê cả phiên bản; delete marker chưa đồng nghĩa đã thu hồi byte.
+- Các object mồ côi ngoài manifest chỉ báo cáo; chỉ thu hồi sau khi xác minh phạm vi tham chiếu riêng. Không xóa cả prefix.
+- Rollback mặc định về bản ứng dụng tương thích cả overlay và bitmap. Chỉ tắt feature flag không làm ứng dụng rất cũ đọc được ảnh mới không có `url_processed`; nếu buộc rollback sâu phải dựng lại bitmap từ dữ liệu/backup trước. Sau GC, manifest đơn thuần không khôi phục được byte đã xóa.
+
+## 4. Thứ tự thực hiện và điểm kiểm tra
+
+| Bước | Công việc | Điều kiện hoàn thành |
+| --- | --- | --- |
+| P0 — Chuẩn bị dev | Dùng DB dev + bucket dev + ảnh/annotations tổng hợp đồng bộ; xác minh Compose sau đổi đường dẫn, dependency đúng lockfile và service/port thực tế. Tách cấu hình dev khỏi `.env.db` trỏ DB thật. | Có môi trường viết thử độc lập; baseline DB–bucket–code được ghi rõ. Lỗi credential DB thật không chặn viết code/unit test. |
+| P1 — Schema và API tương thích | Migration cộng thêm, revisions, trạng thái render, API đọc annotations theo visit hoặc batch, viewer fallback legacy; chưa đổi writer mặc định. | Dữ liệu cũ vẫn xem được, schema mới hỗ trợ kết quả rỗng đã xác minh. |
+| P2 — Metadata processing | Endpoint hình học JSON; service backend được controller gọi; transaction/revision; giữ nhãn; cập nhật import và trạng thái partial. | Xử lý/reprocess không tạo object ảnh; không truyền pixel cho ảnh đã có metadata hợp lệ. |
+| P3 — Viewer/cache/rotation | Dùng RAW + overlay cho lưới/lightbox; cache ổn định, stream/ETag; cập nhật tất cả đường ghi ảnh và xoay an toàn. | Chuyển chế độ/sửa nhãn không tải bitmap thứ hai; ảnh xoay và tọa độ khớp, không mất nhãn. |
+| P4 — Dữ liệu lịch sử | Công cụ dry-run/phân loại, manifest, chọn nhóm nhỏ đủ điều kiện; hỗ trợ fallback nhóm thiếu dữ liệu. | Không tự chuyển 21 ảnh thiếu subbox; các ảnh được chọn có preview xác minh và rollback rõ. |
+| P5 — Thu hồi storage | Kiểm kê đúng kho ảnh thật, xác định consumer, dừng/drain writer liên quan, apply manifest đã qua thử nghiệm; theo dõi checkpoint. | Chỉ xóa object không còn tham chiếu; có thống kê byte thực sự thu hồi. |
+
+P1–P4 là code và công cụ cần hoàn tất trên branch. P5 là thao tác vận hành riêng sau kiểm thử; không chạy ngầm cùng migration hoặc lúc backend khởi động. Chưa có đủ mapping kho ảnh thật/consumer và môi trường ghi thử thì không chạy P5 hay integration test ghi vào DB .155.
+
+Không dùng kiểm thử tích hợp delete-patient làm bài test cho feature này: base chưa có phần đó và test có tạo/xóa dữ liệu.
+
+## 5. Ma trận kiểm thử bắt buộc
+
+| Nhóm | Ca kiểm thử và yêu cầu |
 | --- | --- |
-| `image-processing-service/processors/tooth_divider.py:112` | Chọn nhãn bằng `random.choice([0, 1])`, vẽ rectangle trực tiếp lên ảnh; dòng 219 lưu bằng `cv2.imwrite`. Xử lý lại có thể sinh byte/hash khác. |
-| `image-processing-service/app.py:155` | Endpoint batch trả ZIP gồm ảnh và annotations. Đường thành công dùng `background=None`, chưa thấy cleanup thư mục tạm của request. |
-| `backend/src/workers/imageProcessor.js:59` | Tải ảnh RAW cả batch vào buffer, gọi Python, nhận ZIP rồi giải nén; tiêu thụ RAM backend và I/O tạm, không phải cache Redis. |
-| `backend/src/services/processedImageReferenceService.js:5` | Tạo `processed_by_hash/<sha256>.<ext>`, upload và cập nhật `images.url_processed`; chỉ chống trùng byte trong prefix processed. Không dọn URL cũ tại bước thay tham chiếu này. |
-| `frontend/src/features/images/components/ProcessedImageViewer.jsx:390` | Thumbnail processed sử dụng `url_processed`. Lightbox cũng chọn URL này trước khi truyền vào `AnnotationCanvas` ở dòng 954. |
-| `frontend/src/components/AnnotationCanvas.jsx:61` | Vẽ ảnh nền rồi vẽ bbox/subbox lần nữa: có thể chồng overlay lên khung đã nằm trong bitmap. |
-| `frontend/src/components/ImageUpload.jsx:64` | Hai hàm tải danh sách gắn `Date.now()` vào URL; cùng nội dung có cache key mới sau mỗi lần reload. |
-| `backend/src/routes/api.js:102` | Proxy đọc toàn bộ object vào buffer và đặt cache HTTP 1 giờ; không có Redis image cache tại đây. |
-| `backend/src/controllers/ImageProcessingController.js:116` | Enqueue theo visit, không enqueue riêng RAW và processed. Trạng thái ảnh ở nhiều nhánh vẫn suy ra từ sự tồn tại `url_processed`. |
-| `backend/src/config/queue.js:21` | BullMQ giữ tối đa 100 completed jobs và 200 failed jobs theo cấu hình hiện tại. |
-| `backend/src/services/datasetExportService.js:297` | Export dataset tải `image.url`; phải tiếp tục giữ ảnh nguồn sạch khi thay kiến trúc. |
-| `backend/src/services/storageDeletionService.js:89` | Đã có cơ chế kiểm tra tham chiếu và advisory lock để xóa object dùng chung; có thể tái sử dụng cho migration. |
+| Geometry | Ảnh ngang/dọc, kích thước thật khác 1024, bbox sát biên; không mắc cài, nhiều mắc cài, cùng class răng nhưng parent ID khác; chỉ bbox hợp lệ mới sinh vùng. |
+| Input và legacy | Thiếu annotations không sinh dummy; kết quả rỗng hợp lệ phân biệt missing-input; ảnh legacy không annotations vẫn xem được bitmap; YOLO có subbox không bị sinh lại/đổi nhãn. |
+| Idempotency/nhãn | Process hai lần: số object không tăng, ID/nhãn/history được giữ; không có prediction ngẫu nhiên; lỗi ghi DB không để completed một phần. |
+| Đồng thời | Hai process; process với sửa nhãn, rotate/replace hoặc soft-delete: kết quả cũ không commit lên revision mới/ảnh đã xóa. |
+| Rotation | 90/180/270°, đổi width/height, răng–mắc cài–subbox và click hit-test khớp; lỗi upload/DB giữ được ảnh cũ và nhãn. |
+| UI/cache | Grid/lightbox dùng chung URL; thay chế độ không request bitmap khác; sửa nhãn chỉ refresh overlay; reload không đổi version vô cớ; thay ảnh đổi version; 304, stream lỗi và client disconnect được xử lý. |
+| Export | YOLO/COCO dùng ảnh sạch và tọa độ đúng; 0/1/null được kiểm tra, COCO không đổi nhãn số 1 thành class 0. Không thay quy ước label import trong PR này. |
+| Migration | Fresh DB và schema hiện có; chạy lại không lỗi; dữ liệu lịch sử không tự thành overlay-ready; image ID/annotation ID/history không đổi. |
+| Cleanup | Hai ảnh dùng chung object, soft-delete, bucket có consumer khác, ETag đổi, retry sau xóa một phần, rollback trước/sau GC; dry-run không ghi/xóa tài sản. |
+| Hiệu năng | Ghi số request/byte khi chuyển chế độ, object/byte trước–sau, RSS backend/Python/browser. Chỉ đo Redis của đúng stack nếu có consumer; không cam kết giảm 50% Redis. |
 
-## 3. Kiến trúc đích
+Chạy unit tests backend/Python phù hợp với các thay đổi, frontend production build, kiểm thử API + MinIO/PostgreSQL trên fixture riêng, kiểm tra trực quan browser và `git diff --check`. Test chỉ có subboxMapper ở base không đủ chứng minh feature hoàn thành.
 
-```text
-MinIO: một object ảnh nguồn cho mỗi ảnh logic
-                  |
-            URL + image_revision
-                  |
-        ảnh nền dùng chung trên giao diện
-                  + chế độ RAW: tắt overlay
-                  + chế độ processed: bật bbox răng, mắc cài và subbox
+## 6. Tiêu chí chốt triển khai
 
-PostgreSQL: image_annotations + processing_status + annotation_revision
-Redis: hàng đợi ID/trạng thái; không thêm cache bitmap processed
-```
+- Luồng mới không tạo bitmap processed; sửa nhãn chỉ ghi metadata. Mục tiêu “một ảnh” là một nguồn đang được sử dụng, có thể giữ revision/legacy tạm trong thời gian rollback.
+- Overlay-ready phải được xác minh cho đúng revision, không dựa vào `url_processed` hoặc số subbox đơn thuần.
+- Dữ liệu bác sĩ/YOLO và lịch sử được bảo toàn; RAW/stained/augmentation không gộp nhầm.
+- Không kéo dependency worker/outbox chưa merge vào PR một cách ngầm định; không hứa lợi ích Redis không có số đo.
+- Tiết kiệm storage = tổng byte các object thực sự thu hồi sau loại trùng và kiểm tra tham chiếu. Chỉ gần 50% dung lượng của cặp RAW/processed khi hai file gần bằng nhau; không phải 50% toàn bucket.
+- Điều kiện để chuyển đổi dữ liệu thật còn mở: cấu hình DB hợp lệ cho triển khai, kho MinIO đúng với DB .155, danh sách consumer dùng chung và phân loại nhóm ảnh lịch sử. Các điều kiện này không cản trở bắt đầu code trên fixture dev.
 
-Một object ở đây áp dụng cho cặp RAW/processed chỉ khác khung vẽ. Ảnh stained và ảnh augmentation có biến đổi nội dung thật vẫn là tài sản riêng.
-
-Giữ `images.id` và các annotation ID ổn định. Dùng `processing_status` cùng phiên bản ảnh/annotations để xác định kết quả xử lý hợp lệ; không dùng `url_processed` hoặc số annotations lớn hơn 0 để kết luận thành công. Ảnh không có răng phù hợp vẫn có thể xử lý thành công với kết quả rỗng.
-
-## 4. Thứ tự triển khai
-
-### P0 — Kiểm kê và chốt baseline
-
-1. Đối chiếu phiên bản đang chạy với mã nguồn này.
-2. Thống kê số ảnh RAW, ảnh có `url_processed`, object distinct, tổng byte của RAW, processed đang tham chiếu và processed mồ côi. Không cộng lặp object được nhiều hàng cùng tham chiếu. Kiểm tra cả phiên bản object nếu bucket bật versioning.
-3. Đo Redis `INFO memory`, số lượng job theo trạng thái, lấy mẫu `SCAN` + `TYPE` + `MEMORY USAGE`; chỉ xem schema/kích thước, tránh xuất payload nhạy cảm. Phân biệt bộ nhớ queue, RSS/fragmentation và cache nếu production có thành phần ngoài repo.
-4. Đo browser Network, số request/byte khi chuyển RAW–processed và reload danh sách; đo RSS backend/Python và dung lượng temp trước/sau batch.
-5. Kiểm tra ảnh thiếu width/height, annotations bác sĩ đã sửa, ảnh đã xoay và khả năng dựng overlay từ dữ liệu hiện có.
-
-### P1 — Giao diện và contract dữ liệu
-
-1. Cả thumbnail và lightbox dùng cùng `image.url`; bật/tắt riêng lớp overlay. Tái sử dụng ảnh nền đã tải, không tạo canvas kích thước ảnh gốc cho từng thumbnail.
-2. Hoàn thiện renderer phân biệt răng và mắc cài, vẽ đúng bốn subbox, hỗ trợ hover/click/zoom/rotation. Hiện API gom mọi parent vào `teeth`, cần phân loại rõ để tránh hiển thị mắc cài như một răng.
-3. Đưa annotations cho lưới ảnh qua API batch theo visit hoặc tải khi cần, tránh một request cho mỗi ô sau mỗi render.
-4. Thay mọi điều kiện dựa vào `url_processed` ở UI, API trạng thái và worker bằng trạng thái xử lý có revision. Giữ field cũ tạm thời để chuyển đổi tương thích.
-5. Bổ sung `image_revision` và `annotation_revision` hoặc cơ chế phiên bản tương đương. Ảnh đổi/xoay mới đổi revision ảnh; sửa nhãn chỉ đổi revision annotations.
-6. Nếu annotation chưa đủ để dựng lại một ảnh lịch sử, đánh dấu cần kiểm tra/tính lại hình học, không suy diễn thành công chỉ vì có URL cũ.
-
-### P2 — Ngừng tạo bitmap processed
-
-1. Tách hàm tính bốn vùng khỏi hàm vẽ ảnh. Trong luồng hiện tại hình học chỉ dựa trên bbox răng/mắc cài và kích thước ảnh; có thể thêm endpoint nhận metadata và trả JSON annotations, không cần truyền pixel ảnh sau khi đã xác thực kích thước.
-2. Worker gọi contract mới, bỏ upload `processed_by_hash`, ZIP ảnh và đọc/ghi temp cho luồng divide-corners. Giữ augmentation và chức năng xuất ảnh có khung theo yêu cầu tách biệt.
-3. Ghi annotations và trạng thái completed trong cùng transaction. Kết quả lỗi từng ảnh phải thể hiện đúng partial/failed; hiện annotation parse lỗi vẫn có thể bị bỏ qua và tăng processedCount.
-4. Kiểm tra revision đầu vào trước khi commit để kết quả cũ không ghi đè ảnh vừa xoay/thay. Giữ khóa phối hợp với luồng xóa bệnh nhân.
-5. Không tạo nhãn plaque ngẫu nhiên. Giữ nhãn bác sĩ, lưu trạng thái chưa đánh giá cho vùng mới hoặc prediction từ nguồn hợp lệ. Reprocess phải idempotent, không xóa rồi tạo lại nhãn đã duyệt.
-6. Sửa contract vùng: Python trả G/I/M/D trong khi worker gán thứ tự thành top_left/top_right/bottom_left/bottom_right. Chốt mapping hiển thị/nghiệp vụ rõ ràng; không đổi nghĩa dữ liệu lịch sử chỉ bằng đổi tên hàng loạt.
-7. Bỏ giả định trung gian 1024×1024 và fallback 6240×4160 khi không biết kích thước. Chuyển tọa độ theo kích thước thật, tránh làm tròn hai lần; xác thực bbox nằm trong ảnh. Nguồn ảnh thiếu metadata phải được đọc kích thước một lần.
-
-### P3 — Sửa cache và bộ nhớ
-
-1. Thay timestamp theo lần tải bằng URL ổn định có `?v=<image_revision>`. RAW và processed dùng đúng cùng một URL.
-2. Thêm ETag/conditional request ở proxy, kiểm tra trước khi tải toàn bộ nội dung. Stream MinIO → HTTP với backpressure để giảm buffer của Node. Chọn cache policy phù hợp quyền truy cập ảnh.
-3. Canvas giữ ảnh nền, chỉ redraw overlay khi hover/sửa nhãn; giới hạn backing store theo kích thước hiển thị và device pixel ratio, giữ phép đổi tọa độ/hit test chính xác. Đóng viewer thì giải phóng tài nguyên không dùng.
-4. Redis tiếp tục chứa payload job nhỏ. Chỉ điều chỉnh retention sau đo đạc; không cần thêm một lớp Redis cache ảnh để thực hiện kế hoạch này. Nếu sau này cache annotations, dùng cache nhỏ theo image ID/revision và invalidation rõ ràng.
-
-### P4 — Chuyển dữ liệu cũ và thu hồi dung lượng
-
-1. Triển khai schema/contract tương thích trước, rồi viewer mới, sau đó mới chuyển worker sang metadata-only bằng feature flag. Không để worker mới chạy khi viewer cũ còn phụ thuộc URL bitmap.
-2. Backfill trạng thái/revision theo dữ liệu đã kiểm tra; giữ nguyên image ID, annotation ID, người sửa và thời gian sửa. Không bắt buộc chạy lại toàn bộ dataset.
-3. Tạo manifest gồm image ID, URL processed cũ, object key, số byte và kết quả kiểm tra; dry-run trước. Chỉ bỏ tham chiếu processed khi ảnh gốc và overlay thay thế đã được xác nhận.
-4. Đưa object cũ vào outbox GC có thời gian chờ rollback. Dùng nhánh xóa object shared với kiểm tra tất cả tham chiếu ngay trước xóa, kể cả ảnh soft-delete; dùng advisory lock như writer hiện tại. Không xóa thẳng cả prefix.
-5. Quét riêng object mồ côi trong `processed_by_hash` vì xóa bệnh nhân hiện chỉ liệt kê prefix `visits/<id>/` và URL đang được tham chiếu; cần grace period và phối hợp dừng writer cũ để tránh đua ghi/xóa.
-6. Rollback trước GC: phục hồi mapping từ manifest và bật lại reader cũ. Sau xóa vật lý, muốn phục hồi bitmap phải có backup hoặc dựng lại; không coi rollback ứng dụng là đủ.
-
-## 5. Tiêu chí nghiệm thu
-
-- Upload một RAW rồi xử lý không tạo thêm object ảnh processed; xử lý lại không tăng số object.
-- Chuyển RAW/processed chỉ thay overlay và không tải một bitmap khác; reload không đổi URL khi ảnh chưa đổi.
-- Răng, mắc cài, bốn vùng khớp ở ảnh ngang/dọc, ảnh kích thước khác nhau, zoom và rotation; không còn đường khung đã ghi vào ảnh nền.
-- Sửa nhãn chỉ ghi metadata; reprocess giữ annotation đã duyệt, không sinh nhãn ngẫu nhiên.
-- Processing thành công với kết quả rỗng, lỗi từng ảnh, retry, xoay đồng thời và xóa bệnh nhân đều có trạng thái đúng.
-- Export YOLO/COCO vẫn dùng ảnh nguồn sạch và tọa độ đúng; stained/augmentation không bị gộp nhầm.
-- GC giữ object còn tham chiếu; retry/rollback được kiểm chứng trên dữ liệu thử trước production.
-- Báo cáo trước/sau tách rõ byte MinIO, Redis used_memory/RSS, RSS backend/Python, temp disk và browser network/memory.
-
-Mức tiết kiệm MinIO cần tính bằng tổng byte các object processed thực sự có thể xóa. Nếu mỗi RAW chỉ có một processed với dung lượng gần bằng nhau, tiết kiệm xấp xỉ 50% phần dung lượng của cặp ảnh đó; không phải 50% toàn bucket. Chưa có cơ sở cam kết Redis giảm 50%.
+Bản rà soát này chỉ cập nhật kế hoạch; chưa triển khai ứng dụng, chạy migration, sửa credential hoặc xóa dữ liệu máy chủ.
