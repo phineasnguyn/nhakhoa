@@ -94,3 +94,65 @@ test('persists a creating job before enqueueing BullMQ and uses a BullMQ-safe da
   assert.equal(response.payload.data.bullmqJobId, 'image-77');
   assert.equal(released, true);
 });
+
+function createEnqueueFixture({ activeJob = null, enqueueError = null } = {}) {
+  const events = [];
+  const client = {
+    async query(sql) {
+      const statement = sql.replace(/\s+/g, ' ').trim();
+      events.push(statement);
+      if (statement.startsWith('SELECT id FROM visits')) return { rows: [{ id: 10 }] };
+      if (statement.startsWith('SELECT COUNT(*)::int AS total')) return { rows: [{ total: 2 }] };
+      if (statement.startsWith('SELECT id, status, progress FROM processing_jobs')) {
+        return { rows: activeJob ? [activeJob] : [] };
+      }
+      if (statement.startsWith('INSERT INTO processing_jobs')) {
+        return { rows: [{ id: 77, status: 'creating', total_images: 2 }] };
+      }
+      return { rows: [] };
+    },
+    release() { events.push('RELEASE'); },
+  };
+  const database = {
+    pool: { connect: async () => client },
+    async query(sql, params) {
+      events.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
+      return { rows: [] };
+    },
+  };
+  const queue = {
+    async add() {
+      events.push('QUEUE_ADD');
+      if (enqueueError) throw enqueueError;
+      throw new Error('Unexpected enqueue');
+    },
+  };
+  const response = {
+    statusCode: 200,
+    status(code) { this.statusCode = code; return this; },
+    json(payload) { this.payload = payload; return this; },
+  };
+  return { events, response, controller: new ImageProcessingController({ queue, database }) };
+}
+
+test('rejects duplicate processing while an existing job is active without enqueueing', async () => {
+  const fixture = createEnqueueFixture({ activeJob: { id: 66, status: 'processing', progress: 40 } });
+  await fixture.controller.processRawImages({ params: { visitId: '10' } }, fixture.response);
+  assert.equal(fixture.response.statusCode, 409);
+  assert.equal(fixture.response.payload.data.jobId, 66);
+  assert.equal(fixture.events.includes('QUEUE_ADD'), false);
+  assert.ok(fixture.events.includes('ROLLBACK'));
+  assert.ok(fixture.events.includes('RELEASE'));
+});
+
+test('records an enqueue failure so the visit is not permanently blocked by a creating job', async () => {
+  const fixture = createEnqueueFixture({ enqueueError: new Error('Redis unavailable in test') });
+  await fixture.controller.processRawImages({ params: { visitId: '10' } }, fixture.response);
+  assert.equal(fixture.response.statusCode, 500);
+  assert.equal(fixture.response.payload.success, false);
+  assert.ok(fixture.events.indexOf('COMMIT') < fixture.events.indexOf('QUEUE_ADD'));
+  const failedUpdate = fixture.events.find(event => event.sql?.includes("THEN 'failed'"));
+  assert.ok(failedUpdate);
+  assert.deepEqual(failedUpdate.params, ['Redis unavailable in test', 77]);
+  assert.ok(fixture.events.includes('RELEASE'));
+});
