@@ -3,18 +3,20 @@ const { connection } = require('../config/queue');
 const db = require('../config/database');
 const { Image, Visit } = require('../models');
 const { createImageOverlayService } = require('../services/imageOverlayService');
+const { processingDatabaseId } = require('../services/processingJobIdentity');
 const { startStorageDeletionWorker, stopStorageDeletionWorker } = require('./storageDeletionWorker');
 const { startProcessingJobReconciler, stopProcessingJobReconciler } = require('./processingJobReconciler');
 
 async function processImagesJob(job) {
   const { visitId, userId } = job.data;
+  const databaseJobId = processingDatabaseId(job);
   const service = createImageOverlayService();
   const results = [];
   try {
-    await db.query("UPDATE processing_jobs SET status='processing',started_at=COALESCE(started_at,NOW()),completed_at=NULL,error_message=NULL,updated_at=NOW() WHERE id=$1", [job.id]);
+    await db.query("UPDATE processing_jobs SET status='processing',started_at=COALESCE(started_at,NOW()),completed_at=NULL,error_message=NULL,updated_at=NOW() WHERE id=$1", [databaseJobId]);
     const images = await Image.findByCategory(visitId, 'raw');
     if (!images.length) throw new Error('Không tìm thấy ảnh raw nào');
-    await db.query('UPDATE processing_jobs SET total_images=$2 WHERE id=$1', [job.id, images.length]);
+    await db.query('UPDATE processing_jobs SET total_images=$2 WHERE id=$1', [databaseJobId, images.length]);
     let transientError;
     for (const image of images) {
       try {
@@ -35,7 +37,7 @@ async function processImagesJob(job) {
       await job.updateProgress(progress);
       await db.query(
         'UPDATE processing_jobs SET progress=$2,processed_images=$3,result_data=$4::jsonb,updated_at=NOW() WHERE id=$1',
-        [job.id, progress, results.filter(r => r.status === 'completed').length, JSON.stringify({ results })]);
+        [databaseJobId, progress, results.filter(r => r.status === 'completed').length, JSON.stringify({ results })]);
     }
     if (transientError) throw transientError;
     const processedCount = results.filter(r => r.status === 'completed').length;
@@ -44,13 +46,13 @@ async function processImagesJob(job) {
     const summary = { visitId, status, processedCount, totalImages: images.length, results };
     await db.query(
       'UPDATE processing_jobs SET status=$2,progress=100,processed_images=$3,result_data=$4::jsonb,completed_at=NOW(),updated_at=NOW() WHERE id=$1',
-      [job.id, status, processedCount, JSON.stringify(summary)]);
+      [databaseJobId, status, processedCount, JSON.stringify(summary)]);
     return summary;
   } catch (error) {
     const retrying = job.attemptsMade + 1 < (job.opts.attempts || 1);
     await db.query(
       "UPDATE processing_jobs SET status=$2,error_message=$3,completed_at=CASE WHEN $2='failed' THEN NOW() ELSE NULL END,updated_at=NOW() WHERE id=$1",
-      [job.id, retrying ? 'queued' : 'failed', error.message]);
+      [databaseJobId, retrying ? 'queued' : 'failed', error.message]);
     throw error;
   }
 }

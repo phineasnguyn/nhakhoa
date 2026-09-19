@@ -1,5 +1,6 @@
 let timer;
 let running;
+const { processingQueueId } = require('../services/processingJobIdentity');
 
 async function reconcileProcessingJobs(dependencies = {}) {
   const pool = dependencies.pool || require('../config/database').pool;
@@ -11,11 +12,12 @@ async function reconcileProcessingJobs(dependencies = {}) {
       `SELECT * FROM processing_jobs WHERE status IN ('creating','queued','processing')
        AND updated_at < NOW() - INTERVAL '2 minutes' ORDER BY id LIMIT 20 FOR UPDATE SKIP LOCKED`)).rows;
     for (const record of jobs) {
-      const jobId = String(record.id);
+      let jobId = record.bullmq_job_id || processingQueueId(record.id);
       let job = await queue.getJob(jobId);
       if (!job) {
         // DB id is also the idempotency key for requests interrupted before enqueue.
-        job = await queue.add('process-images', { visitId: record.visit_id, userId: record.created_by }, { jobId });
+        jobId = processingQueueId(record.id);
+        job = await queue.add('process-images', { visitId: record.visit_id, userId: record.created_by, processingJobId: record.id }, { jobId });
       }
       const state = await job.getState();
       let status = state === 'active' ? 'processing' : 'queued';

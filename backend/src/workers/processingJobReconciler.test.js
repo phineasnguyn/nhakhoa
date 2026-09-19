@@ -9,9 +9,9 @@ test('reconcile re-enqueues missing creating jobs by the original id and preserv
     if(sql.includes('UPDATE')) updates.push(params);
     return {rows:[]};
   }};
-  const queue = {getJob:async id=>id==='8'?{getState:async()=>'completed',returnvalue:{status:'partial'}}:null,
+  const queue = {getJob:async id=>id==='image-8'?{getState:async()=>'completed',returnvalue:{status:'partial'}}:null,
     add:async(name,data,opts)=>{added.push({data,opts});return {getState:async()=>'waiting'};}};
   await reconcileProcessingJobs({pool:{connect:async()=>client},queue});
-  assert.deepEqual(added,[{data:{visitId:2,userId:3},opts:{jobId:'7'}}]);
+  assert.deepEqual(added,[{data:{visitId:2,userId:3,processingJobId:7},opts:{jobId:'image-7'}}]);
   assert.equal(updates[0][2],'queued'); assert.equal(updates[1][2],'partial');
 });

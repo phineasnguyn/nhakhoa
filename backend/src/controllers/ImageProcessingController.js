@@ -1,5 +1,6 @@
 const { Image } = require('../models');
-const { overlayReady } = require('../services/imagePresentation');
+const { presentImage } = require('../services/imagePresentation');
+const { processingQueueId } = require('../services/processingJobIdentity');
 
 const httpError = (statusCode, message) => Object.assign(new Error(message), { statusCode });
 
@@ -115,10 +116,11 @@ class ImageProcessingController {
           {
             visitId,
             userId: req.user?.id || null,
+            processingJobId: processingJob.id,
           },
           {
             priority: 1,
-            jobId: String(processingJob.id),
+            jobId: processingQueueId(processingJob.id),
           }
         );
 
@@ -194,7 +196,7 @@ class ImageProcessingController {
       if (latestJobResult.rows.length === 0) {
         if (requestedJobId) return res.status(404).json({ success: false, error: 'Job not found' });
         const rawImages = await Image.findByCategory(visitId, 'raw');
-        const processedCount = rawImages.filter((img) => overlayReady(img) || img.url_processed).length;
+        const processedCount = rawImages.filter((img) => presentImage(img).render_mode !== 'raw').length;
 
         return res.json({
           success: true,
@@ -212,7 +214,7 @@ class ImageProcessingController {
 
       let bullmqState = null;
       try {
-        const bullJob = await queue.getJob(job.bullmq_job_id || String(job.id));
+        const bullJob = await queue.getJob(job.bullmq_job_id || processingQueueId(job.id));
         if (bullJob) {
           bullmqState = await bullJob.getState();
         }
@@ -226,10 +228,6 @@ class ImageProcessingController {
       else if (bullmqState === 'failed') status = 'failed';
       else if (['waiting', 'delayed', 'prioritized'].includes(bullmqState)) status = 'queued';
 
-      const images = await Image.findByVisitId(visitId);
-      const rawImages = images.filter((img) => img.image_category === 'raw');
-      const processedCount = rawImages.filter((img) => overlayReady(img) || img.url_processed).length;
-
       res.json({
         success: true,
         data: {
@@ -237,7 +235,7 @@ class ImageProcessingController {
           status,
           progress: job.progress,
           totalImages: job.total_images,
-          processedImages: job.processed_images ?? processedCount,
+          processedImages: job.processed_images ?? 0,
           results: job.result_data?.results || [],
           errorMessage: job.error_message,
           createdAt: job.created_at,

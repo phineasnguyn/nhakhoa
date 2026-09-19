@@ -86,11 +86,26 @@ test('overlay, retry, rotations and storage audit on isolated PostgreSQL/MinIO/R
     await events.waitUntilReady();
     startWorker();
     const record=(await db.query("INSERT INTO processing_jobs(visit_id,status) VALUES(1,'creating') RETURNING id")).rows[0];
-    const job=await queue.add('process-images',{visitId:1,userId:null},{jobId:String(record.id)});
+    const job=await queue.add('process-images',{visitId:1,userId:null,processingJobId:record.id},{jobId:`image-${record.id}`});
     const result=await job.waitUntilFinished(events,30000);
     assert.equal(result.status,'partial'); assert.equal(result.processedCount,1);
     assert.equal((await db.query('SELECT status FROM processing_jobs WHERE id=$1',[record.id])).rows[0].status,'partial');
     assert.ok(Buffer.byteLength(JSON.stringify((await queue.getJob(job.id)).toJSON()))<10000,'Redis contains metadata only');
+
+    // Exercise an actual delayed BullMQ retry after one transient Python failure.
+    await db.query('DELETE FROM image_annotations WHERE image_id=1 AND parent_annotation_id IS NOT NULL');
+    const processing=require('./imageProcessingService');
+    const original=processing.computeOverlay.bind(processing);
+    let calls=0;
+    processing.computeOverlay=async payload=>{ if(++calls===1) throw Error('Injected transient geometry outage'); return original(payload); };
+    try {
+      const retryRecord=(await db.query("INSERT INTO processing_jobs(visit_id,status) VALUES(1,'creating') RETURNING id")).rows[0];
+      const retry=await queue.add('process-images',{visitId:1,userId:null,processingJobId:retryRecord.id},
+        {jobId:`image-${retryRecord.id}`,attempts:2,backoff:{type:'fixed',delay:100}});
+      const retried=await retry.waitUntilFinished(events,30000);
+      assert.equal(retried.status,'partial'); assert.equal(calls,2);
+      assert.equal((await queue.getJob(retry.id)).attemptsMade,2);
+    } finally { processing.computeOverlay=original; }
     const audit=await auditImageStorage({pool:db.pool,storage,identity:{database:process.env.DB_NAME}});
     assert.equal(audit.candidateBytes,0,'history and unready consumer protect the shared legacy object');
     assert.equal(audit.objects.length,1);

@@ -99,11 +99,10 @@ function ImageUpload() {
         if (['partial', 'review_required'].includes(finalStatus.status)) {
           const reasons = finalStatus.results?.filter(r => r.status !== 'completed').map(r => r.reason).join('; ');
           toast.error(reasons || 'Một số ảnh cần kiểm tra annotations.');
-          return { success: false, status: finalStatus.status };
+          return { success: false, status: finalStatus.status, message: reasons || 'Một số ảnh cần kiểm tra annotations.' };
         }
         if (finalStatus.status === 'completed') {
           toast.success('Xử lý ảnh thành công!');
-          await loadImages();
           return { success: true };
         }
         if (finalStatus.status === 'failed') {

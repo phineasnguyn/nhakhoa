@@ -2,7 +2,21 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { ImageProcessingController } = require('./ImageProcessingController');
 
-test('persists a creating job before enqueueing BullMQ and uses the database id as jobId', async () => {
+test('status follows the requested job, preserves partial, and treats delayed retry as queued', async()=>{
+  for (const [dbStatus,queueState,expected] of [['partial','completed','partial'],['failed','delayed','queued'],['review_required','completed','review_required']]) {
+    const controller = new ImageProcessingController({
+      database:{query:async(sql,params)=>{assert.deepEqual(params,['10','77']);return {rows:[{id:77,status:dbStatus,processed_images:0,result_data:{results:[{imageId:1,status:'review_required'}]}}]};}},
+      queue:{getJob:async id=>{assert.equal(id,'image-77');return {getState:async()=>queueState};}},
+    });
+    let response;
+    await controller.getProcessingStatus({params:{visitId:'10'},query:{jobId:'77'}},{json:x=>{response=x;}});
+    assert.equal(response.data.status,expected);
+    assert.equal(response.data.processedImages,0);
+    assert.equal(response.data.results.length,1);
+  }
+});
+
+test('persists a creating job before enqueueing BullMQ and uses a BullMQ-safe database-derived jobId', async () => {
   const events = [];
   let released = false;
 
@@ -34,10 +48,10 @@ test('persists a creating job before enqueueing BullMQ and uses the database id 
     async query(sql, params) {
       const compactSql = sql.replace(/\s+/g, ' ').trim();
       events.push(compactSql);
-      assert.equal(params[0], '77');
+      assert.equal(params[0], 'image-77');
       assert.equal(params[1], 77);
       return {
-        rows: [{ id: 77, visit_id: 10, bullmq_job_id: '77', status: 'queued', total_images: 2 }],
+        rows: [{ id: 77, visit_id: 10, bullmq_job_id: 'image-77', status: 'queued', total_images: 2 }],
       };
     },
   };
@@ -46,9 +60,9 @@ test('persists a creating job before enqueueing BullMQ and uses the database id 
     async add(name, data, options) {
       events.push('QUEUE_ADD');
       assert.equal(name, 'process-images');
-      assert.deepEqual(data, { visitId: 10, userId: 5 });
-      assert.equal(options.jobId, '77');
-      return { id: '77' };
+      assert.deepEqual(data, { visitId: 10, userId: 5, processingJobId: 77 });
+      assert.equal(options.jobId, 'image-77');
+      return { id: 'image-77' };
     },
   };
 
@@ -77,6 +91,6 @@ test('persists a creating job before enqueueing BullMQ and uses the database id 
   assert.ok(insertIndex >= 0 && insertIndex < commitIndex && commitIndex < enqueueIndex);
   assert.equal(response.statusCode, 202);
   assert.equal(response.payload.data.jobId, 77);
-  assert.equal(response.payload.data.bullmqJobId, '77');
+  assert.equal(response.payload.data.bullmqJobId, 'image-77');
   assert.equal(released, true);
 });
