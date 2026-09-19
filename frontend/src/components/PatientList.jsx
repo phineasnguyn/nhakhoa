@@ -12,6 +12,7 @@ function PatientList() {
   const [patients, setPatients] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [deletingPatientId, setDeletingPatientId] = useState(null)
   
   // Get params from URL or use defaults
   const page = parseInt(searchParams.get('page')) || 1
@@ -126,14 +127,23 @@ function PatientList() {
     }
   }
 
-  const handleDelete = async (id) => {
-    if (!window.confirm('Bạn có chắc muốn xóa bệnh nhân này?')) return
+  const handleDelete = async (patient) => {
+    const totalVisits = patient.total_visits || 0
+    const confirmed = window.confirm(
+      `Bạn có chắc muốn xóa bệnh nhân ${patient.name}?\n\n` +
+      `Thao tác này sẽ xóa vĩnh viễn ${totalVisits} lần khám, toàn bộ ảnh, chú thích và dữ liệu liên quan trong MinIO. Không thể hoàn tác.`
+    )
+    if (!confirmed) return
 
     try {
-      await deletePatient(id)
+      setDeletingPatientId(patient.id)
+      const response = await deletePatient(patient.id)
+      toast.success(response.data?.message || 'Đã xóa bệnh nhân và dữ liệu liên quan')
       loadPatients()
     } catch (err) {
-      toast.error('Không thể xóa bệnh nhân');
+      toast.error(err.response?.data?.message || 'Không thể xóa bệnh nhân')
+    } finally {
+      setDeletingPatientId(null)
     }
   }
 
@@ -287,12 +297,13 @@ function PatientList() {
                 </button>
                 <button 
                   className="icon-button"
-                  onClick={() => handleDelete(patient.id)}
+                  onClick={() => handleDelete(patient)}
+                  disabled={deletingPatientId === patient.id}
                   title="Xóa"
                   style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--error)' }}
                 >
                   <FiTrash2 size={16} />
-                  Xóa
+                  {deletingPatientId === patient.id ? 'Đang xóa...' : 'Xóa'}
                 </button>
               </td>
             </tr>

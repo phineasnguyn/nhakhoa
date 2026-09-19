@@ -3,6 +3,34 @@ const fs = require('fs');
 const path = require('path');
 
 const BUCKET_NAME = process.env.MINIO_BUCKET || 'nhakhoa';
+const MINIO_DELETE_BATCH_SIZE = 1000;
+
+// Convert stored MinIO URLs (relative, absolute, or presigned) to object names.
+const extractObjectName = (value) => {
+  if (!value || typeof value !== 'string') return null;
+
+  let objectPath = value.trim();
+  if (!objectPath) return null;
+
+  try {
+    if (/^https?:\/\//i.test(objectPath)) {
+      objectPath = new URL(objectPath).pathname;
+    } else {
+      objectPath = objectPath.split('?')[0].split('#')[0];
+    }
+    objectPath = decodeURIComponent(objectPath);
+  } catch (error) {
+    return null;
+  }
+
+  objectPath = objectPath.replace(/^\/+/, '');
+  if (objectPath === BUCKET_NAME) return null;
+  if (objectPath.startsWith(`${BUCKET_NAME}/`)) {
+    objectPath = objectPath.slice(BUCKET_NAME.length + 1);
+  }
+
+  return objectPath || null;
+};
 
 // Ensure bucket exists
 const ensureBucket = async () => {
@@ -117,15 +145,38 @@ const deleteFile = async (objectName) => {
 
 // Delete multiple files
 const deleteFiles = async (objectNames) => {
+  const uniqueObjectNames = [...new Set(objectNames.filter(Boolean))];
+  if (uniqueObjectNames.length === 0) {
+    return { success: true, message: 'No files to delete', deletedCount: 0 };
+  }
+
   try {
-    const objectsList = objectNames.map(name => ({ name }));
-    await minioClient.removeObjects(BUCKET_NAME, objectsList);
-    return { success: true, message: 'Files deleted successfully' };
+    for (let index = 0; index < uniqueObjectNames.length; index += MINIO_DELETE_BATCH_SIZE) {
+      const batch = uniqueObjectNames.slice(index, index + MINIO_DELETE_BATCH_SIZE);
+      await minioClient.removeObjects(BUCKET_NAME, batch);
+    }
+    return {
+      success: true,
+      message: 'Files deleted successfully',
+      deletedCount: uniqueObjectNames.length,
+    };
   } catch (error) {
     console.error('Error deleting files:', error);
     return { success: false, error: error.message };
   }
 };
+
+// List every object below a prefix so visit-owned orphan files are also cleaned up.
+const listFilesByPrefix = async (prefix) => new Promise((resolve, reject) => {
+  const objectNames = [];
+  const stream = minioClient.listObjectsV2(BUCKET_NAME, prefix, true);
+
+  stream.on('data', (object) => {
+    if (object.name) objectNames.push(object.name);
+  });
+  stream.on('error', reject);
+  stream.on('end', () => resolve(objectNames));
+});
 
 // Download file as buffer
 const downloadFile = async (objectName) => {
@@ -230,6 +281,8 @@ module.exports = {
   getPresignedPutUrl,
   deleteFile,
   deleteFiles,
+  listFilesByPrefix,
+  extractObjectName,
   downloadFile,
   ensureBucket,
   ensureUploadByHash,

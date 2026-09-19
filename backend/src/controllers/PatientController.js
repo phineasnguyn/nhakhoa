@@ -1,4 +1,5 @@
 const { Patient } = require('../models');
+const patientDeletionService = require('../services/patientDeletionService');
 
 class PatientController {
     async getAllPatients(req, res) {
@@ -81,11 +82,22 @@ class PatientController {
     async deletePatient(req, res) {
         try {
             const { id } = req.params;
-            await Patient.delete(id);
-            res.json({ success: true, message: 'Patient deleted successfully' });
+            const result = await patientDeletionService.deletePatient(id);
+            const storageCleanupPending = result.storageCleanupStatus !== 'completed';
+            res.status(storageCleanupPending ? 202 : 200).json({
+                success: true,
+                message: storageCleanupPending
+                    ? 'Đã xóa bệnh nhân. Ảnh trong MinIO đang được hệ thống tiếp tục dọn dẹp.'
+                    : 'Đã xóa bệnh nhân và toàn bộ dữ liệu liên quan',
+                data: result
+            });
         } catch (error) {
             console.error('Error deleting patient:', error);
-            res.status(500).json({ success: false, error: error.message });
+            res.status(error.statusCode || 500).json({
+                success: false,
+                code: error.code || 'PATIENT_DELETE_FAILED',
+                message: error.message || 'Không thể xóa bệnh nhân'
+            });
         }
     }
 }

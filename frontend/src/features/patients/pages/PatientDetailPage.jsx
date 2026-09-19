@@ -296,7 +296,7 @@ const PatientDetailPage = () => {
         }
       >
         <p>Bạn có chắc chắn muốn xóa bệnh nhân <strong>{patient.name}</strong>?</p>
-        <p className="warning-text">Hành động này không thể hoàn tác.</p>
+        <p className="warning-text">Toàn bộ lần khám, ảnh và chú thích liên quan sẽ bị xóa vĩnh viễn. Hành động này không thể hoàn tác.</p>
       </Modal>
     </div>
   );

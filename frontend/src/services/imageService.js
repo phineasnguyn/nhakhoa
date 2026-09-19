@@ -75,30 +75,20 @@ class ImageService {
   }
 
   /**
-   * Process raw images (send to Python service)
+   * Process raw images (enqueue async job)
    */
   async processImages(visitId) {
     console.log('imageService.processImages called with visitId:', visitId);
-    console.log('API URL:', import.meta.env.VITE_API_URL);
     
     try {
       const url = `/api/visits/${visitId}/process-images`;
-      console.log('Making POST request to:', url);
-      
       const response = await apiClient.post(url, {}, {
-        timeout: 300000 // 5 minutes timeout
+        timeout: 30000
       });
       
-      console.log('Response received:', response);
       return response.data;
     } catch (error) {
       console.error('imageService.processImages error:', error);
-      console.error('Error details:', {
-        message: error.message,
-        response: error.response?.data,
-        status: error.response?.status,
-        config: error.config
-      });
       throw error;
     }
   }
@@ -109,6 +99,41 @@ class ImageService {
   async getProcessingStatus(visitId) {
     const response = await apiClient.get(`/api/visits/${visitId}/processing-status`);
     return response.data;
+  }
+
+  /**
+   * Poll processing status until completed or failed
+   */
+  pollProcessingStatus(visitId, onProgress, intervalMs = 3000) {
+    let stopped = false;
+
+    const poll = async () => {
+      while (!stopped) {
+        try {
+          const result = await this.getProcessingStatus(visitId);
+          const data = result.data;
+
+          if (onProgress) {
+            onProgress(data);
+          }
+
+          if (data.status === 'completed' || data.status === 'failed' || data.status === 'none') {
+            return data;
+          }
+        } catch (err) {
+          console.error('Poll error:', err);
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      }
+    };
+
+    const promise = poll();
+
+    return {
+      promise,
+      stop: () => { stopped = true; },
+    };
   }
 }
 

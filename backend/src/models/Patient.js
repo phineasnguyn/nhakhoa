@@ -132,8 +132,9 @@ class Patient {
 
     static async hardDelete(id) {
         // Permanent delete - use with caution
-        const query = 'DELETE FROM patients WHERE id = $1';
-        await db.query(query, [id]);
+        const query = 'DELETE FROM patients WHERE id = $1 RETURNING *';
+        const result = await db.query(query, [id]);
+        return result.rows[0];
     }
 }
 
