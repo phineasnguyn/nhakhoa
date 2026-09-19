@@ -4,7 +4,7 @@ Rà soát cuối: 20/09/2026. Trạng thái: **đã triển khai luồng RAW + o
 
 ## 1. Branch, môi trường và phạm vi
 
-- Branch chính xác theo yêu cầu: `feature/image-storge-optimization`. Đã merge nguyên lịch sử `feature/delete-patient` tại `2885562`; đã cập nhật `origin/dev` tại `cbaf894` (PR #5 merge delete-patient), không có conflict. Branch `feature/image-storage-optimization` trước đó chỉ là bước chuẩn bị.
+- Branch duy nhất: `feature/image-storage-optimization`, đã nhận toàn bộ lịch sử từ nhánh gõ thiếu chữ `a`. Đã merge nguyên lịch sử `feature/delete-patient` tại `2885562`; đã cập nhật `origin/dev` tại `cbaf894` (PR #5 merge delete-patient), không có conflict.
 - Push lên `phineasnguyn/nhakhoa`; PR sau triển khai nhắm vào `cuddles47/nhakhoa:dev`.
 - VM: `192.168.1.151`, workspace hiện tại `/home/dev_phien/nhakhoa`. Thư mục cũ `nhakhoa-delete-patient` đã được đổi tên.
 - Compose project giữ tên `nhakhoa-dev`; cấu hình riêng của VM và credential không đưa vào Git.
@@ -168,4 +168,4 @@ Chạy unit tests backend/Python phù hợp với các thay đổi, frontend pro
 - Smoke test trên VM dùng Redis container tạm riêng: worker ảnh thực tế khởi động/dừng thành công; queue thử enqueue, xử lý, nhận kết quả và xóa job thành công. Queue ảnh để rỗng; không gửi ảnh hay truy vấn PostgreSQL. Container Redis tạm được xóa sau test.
 - Đây là kiểm tra nền queue; chưa phải kiểm thử end-to-end ảnh qua Python/MinIO/PostgreSQL. Các giới hạn retry/partial/reconcile và pipeline bitmap cũ đã được ghi rõ tại P2.
 
-Phần 7 là kết quả bước chuẩn bị trước triển khai. Luồng RAW + overlay đã được thực hiện trên `feature/image-storge-optimization`; xem báo cáo implementation để biết kết quả mới nhất. Migration 011, chuyển đổi annotations lịch sử và GC chưa được chạy trên DB/bucket dùng chung.
+Phần 7 là kết quả bước chuẩn bị trước triển khai. Luồng RAW + overlay đã được thực hiện trên `feature/image-storage-optimization`; xem báo cáo implementation để biết kết quả mới nhất. Migration 011, chuyển đổi annotations lịch sử và GC chưa được chạy trên DB/bucket dùng chung.

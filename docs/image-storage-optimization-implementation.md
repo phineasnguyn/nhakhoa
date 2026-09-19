@@ -1,6 +1,6 @@
 # Triển khai tối ưu lưu trữ ảnh
 
-Cập nhật 20/09/2026. Branch: `feature/image-storge-optimization` (đúng tên người dùng yêu cầu).
+Cập nhật 20/09/2026. Branch duy nhất: `feature/image-storage-optimization`. Đã hợp nhất toàn bộ lịch sử triển khai từ nhánh gõ thiếu chữ `a`; không tạo một feature tối ưu ảnh thứ hai.
 
 ## 1. Kết quả và phạm vi
 
