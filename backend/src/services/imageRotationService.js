@@ -53,6 +53,10 @@ function createImageRotationService(dependencies = {}) {
         'INSERT INTO image_source_history(image_id,source_url,image_snapshot,annotations_snapshot) VALUES ($1,$2,$3::jsonb,$4::jsonb)',
         [imageId, image.url, JSON.stringify(image), JSON.stringify(rows)]);
       await client.query('UPDATE images SET url=$2,width=$3,height=$4 WHERE id=$1', [imageId, uploaded.url, nextWidth, nextHeight]);
+      // Clear only canonical positions inside this transaction before permuting
+      // them, otherwise the existing unique parent/region index rejects swaps.
+      await client.query(`UPDATE image_annotations SET subbox_region=NULL
+        WHERE image_id=$1 AND subbox_region IN ('top','right','bottom','left')`, [imageId]);
       for (const row of rows) {
         await client.query('UPDATE image_annotations SET bbox=$2::jsonb,subbox_region=$3 WHERE id=$1',
           [row.id, JSON.stringify(rotateBox(row.bbox, metadata.width, metadata.height, angle)), rotateRegion(row.subbox_region, angle)]);
