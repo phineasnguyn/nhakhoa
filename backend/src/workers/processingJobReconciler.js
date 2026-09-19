@@ -24,8 +24,8 @@ async function reconcileProcessingJobs(dependencies = {}) {
       if (state === 'failed') status = 'failed';
       if (state === 'completed') status = job.returnvalue?.status || 'completed';
       await client.query(
-        `UPDATE processing_jobs SET bullmq_job_id=$2,status=$3,updated_at=NOW(),
-         completed_at=CASE WHEN $3 IN ('completed','partial','review_required','failed') THEN COALESCE(completed_at,NOW()) ELSE NULL END
+        `UPDATE processing_jobs SET bullmq_job_id=$2,status=$3::varchar,updated_at=NOW(),
+         completed_at=CASE WHEN $3::varchar IN ('completed','partial','review_required','failed') THEN COALESCE(completed_at,NOW()) ELSE NULL END
          WHERE id=$1`, [record.id, jobId, status]);
     }
     await client.query('COMMIT');

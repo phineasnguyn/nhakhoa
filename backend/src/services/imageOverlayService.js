@@ -75,7 +75,9 @@ function createImageOverlayService(dependencies = {}) {
         throw new OverlayReviewError('unverified_orientation');
       }
       const saved = await pool.query(
-        `UPDATE images SET width=$1,height=$2 WHERE id=$3 AND image_revision=$4
+        `UPDATE images SET width=$1,height=$2,
+         legacy_image_revision=CASE WHEN legacy_image_revision=image_revision THEN image_revision+1 ELSE legacy_image_revision END
+         WHERE id=$3 AND image_revision=$4
          AND annotation_revision=$5 RETURNING id`,
         [metadata.width, metadata.height, imageId, image.image_revision, image.annotation_revision]);
       if (!saved.rows.length) throw Object.assign(new Error('Image changed while reading metadata'), { code: 'STALE_INPUT' });

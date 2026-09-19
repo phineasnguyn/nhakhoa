@@ -42,6 +42,7 @@ tmp/
 temp/
 *.tmp
 .cache/
+.vite/
 
 # Package manager lock files (optional - uncomment if needed)
 # package-lock.json

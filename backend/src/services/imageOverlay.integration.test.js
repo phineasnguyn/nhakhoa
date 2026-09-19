@@ -69,6 +69,14 @@ test('overlay, retry, rotations and storage audit on isolated PostgreSQL/MinIO/R
     await assert.rejects(raced.processImage(1),{code:'STALE_INPUT'});
     assert.equal((await db.query('SELECT count(*)::int AS n FROM image_annotations WHERE parent_annotation_id=10')).rows[0].n,0);
     await service.processImage(1);
+    const region=(await db.query('SELECT id FROM image_annotations WHERE parent_annotation_id=10 ORDER BY id LIMIT 1')).rows[0];
+    await db.query("INSERT INTO users(id,username,password_hash,role) VALUES(9001,'overlay-fixture','not-a-login','doctor')");
+    await db.query('UPDATE image_annotations SET plaque_status=0,annotated_by=9001,annotated_at=NOW() WHERE id=$1',[region.id]);
+    await db.query('INSERT INTO annotation_history(annotation_id,user_id,old_value,new_value) VALUES($1,9001,1,0)',[region.id]);
+    const historyBefore=(await db.query('SELECT * FROM annotation_history')).rows;
+    const imageBeforeMigration=await getImage();
+    await db.query(require('node:fs').readFileSync(require('node:path').resolve(__dirname,'../../../init-db/011_add_image_overlay_metadata.sql'),'utf8'));
+    assert.deepEqual(await getImage(),imageBeforeMigration,'rerunning migration preserves populated overlay metadata');
     const ids=(await db.query('SELECT id,plaque_status FROM image_annotations WHERE image_id=1 ORDER BY id')).rows;
     const rotation=createImageRotationService();
     for(const angle of [90,180,270]) {
@@ -78,13 +86,17 @@ test('overlay, retry, rotations and storage audit on isolated PostgreSQL/MinIO/R
       assert.equal(result.height,angle===180?old.height:old.width);
       assert.equal(result.render_mode,'overlay');
       assert.deepEqual((await db.query('SELECT id,plaque_status FROM image_annotations WHERE image_id=1 ORDER BY id')).rows,ids);
+      assert.deepEqual((await db.query('SELECT * FROM annotation_history')).rows,historyBefore);
+      assert.equal((await db.query('SELECT annotated_by FROM image_annotations WHERE id=$1',[region.id])).rows[0].annotated_by,9001);
       assert.ok(await storage.statFile(storage.extractObjectName(old.url)),'previous source retained');
     }
     assert.equal((await db.query('SELECT count(*)::int AS n FROM image_source_history')).rows[0].n,3);
 
     // The second legacy image lacks annotations: job is partial, never fake success.
     await events.waitUntilReady();
-    startWorker();
+    const workerErrors=[];
+    const worker=startWorker();
+    worker.on('failed',(_job,error)=>workerErrors.push(error.message));
     const record=(await db.query("INSERT INTO processing_jobs(visit_id,status) VALUES(1,'creating') RETURNING id")).rows[0];
     const job=await queue.add('process-images',{visitId:1,userId:null,processingJobId:record.id},{jobId:`image-${record.id}`});
     const result=await job.waitUntilFinished(events,30000);
@@ -105,7 +117,11 @@ test('overlay, retry, rotations and storage audit on isolated PostgreSQL/MinIO/R
       const retried=await retry.waitUntilFinished(events,30000);
       assert.equal(retried.status,'partial'); assert.equal(calls,2);
       assert.equal((await queue.getJob(retry.id)).attemptsMade,2);
+      assert.deepEqual(workerErrors,['Injected transient geometry outage']);
     } finally { processing.computeOverlay=original; }
+    await db.query("UPDATE processing_jobs SET status='processing',updated_at=NOW()-INTERVAL '3 minutes' WHERE id=$1",[record.id]);
+    await require('../workers/processingJobReconciler').reconcileProcessingJobs();
+    assert.equal((await db.query('SELECT status FROM processing_jobs WHERE id=$1',[record.id])).rows[0].status,'partial');
     const audit=await auditImageStorage({pool:db.pool,storage,identity:{database:process.env.DB_NAME}});
     assert.equal(audit.candidateBytes,0,'history and unready consumer protect the shared legacy object');
     assert.equal(audit.objects.length,1);

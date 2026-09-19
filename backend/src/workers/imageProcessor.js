@@ -51,7 +51,7 @@ async function processImagesJob(job) {
   } catch (error) {
     const retrying = job.attemptsMade + 1 < (job.opts.attempts || 1);
     await db.query(
-      "UPDATE processing_jobs SET status=$2,error_message=$3,completed_at=CASE WHEN $2='failed' THEN NOW() ELSE NULL END,updated_at=NOW() WHERE id=$1",
+      "UPDATE processing_jobs SET status=$2::varchar,error_message=$3,completed_at=CASE WHEN $2::varchar='failed' THEN NOW() ELSE NULL END,updated_at=NOW() WHERE id=$1",
       [databaseJobId, retrying ? 'queued' : 'failed', error.message]);
     throw error;
   }
