@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getVisitById, getImagesByVisit, createImage, updateImageValidation } from '../api'
 import { FiArrowLeft, FiImage, FiUpload, FiCheck, FiX, FiCheckCircle, FiXCircle } from 'react-icons/fi'
 import ProcessedImageViewer from '../features/images/components/ProcessedImageViewer'
 import imageService from '../services/imageService'
+import { canViewProcessed, withImageUrls } from '../services/imagePresentation'
 import toast from 'react-hot-toast';
 
 
@@ -11,6 +12,8 @@ function ImageUpload() {
   const { visitId } = useParams()
   const navigate = useNavigate()
   
+  const pollingRef = useRef(null);
+  useEffect(() => () => pollingRef.current?.stop(), [visitId]);
   const [visit, setVisit] = useState(null)
   const [images, setImages] = useState([])
   const [rawImages, setRawImages] = useState([])
@@ -37,49 +40,14 @@ function ImageUpload() {
       const imagesResponse = await getImagesByVisit(visitId)
       const allImages = imagesResponse.data.data || []
       
-      // Convert all MinIO paths to proxy URLs
-      const API_URL = import.meta.env.VITE_API_URL;
-      const convertToProxyUrl = (url) => {
-        if (!url) return url;
-        
-        // Always use proxy for consistency
-        // Extract path after bucket name from any URL format
-        let path = url;
-        
-        // If it's a full URL (presigned or not), extract the path
-        if (url.startsWith('http')) {
-          const match = url.match(/\/nhakhoa\/(.+?)(\?|$)/);
-          if (match) {
-            path = match[1];
-          } else {
-            // Can't parse, return as is
-            console.warn('⚠️ Cannot parse URL:', url);
-            return url;
-          }
-        } else {
-          // Regular MinIO path format
-          path = url.replace(/^\/nhakhoa\//, '');
-        }
-        
-        // Add cache buster timestamp to force reload
-        const proxyUrl = `${API_URL}/api/images/proxy/${path}?t=${Date.now()}`;
-        console.log('🔄 URL conversion:', { original: url, proxy: proxyUrl });
-        return proxyUrl;
-      };
-      
-      const allImagesWithProxy = allImages.map(img => ({
-        ...img,
-        url: convertToProxyUrl(img.url),
-        url_processed: convertToProxyUrl(img.url_processed)
-      }));
-      
+      const allImagesWithProxy = allImages.map(withImageUrls);
       setImages(allImagesWithProxy)
       const rawImagesData = allImagesWithProxy.filter(img => img.image_category === 'raw')
       setRawImages(rawImagesData)
       setStainedImages(allImagesWithProxy.filter(img => img.image_category === 'stained'))
       
       // Set processedImages - important for detecting if images are already processed!
-      const processedImagesData = rawImagesData.filter(img => img.url_processed)
+      const processedImagesData = rawImagesData.filter(canViewProcessed)
       setProcessedImages(processedImagesData)
     } catch (err) {
       // ...existing code...
@@ -94,46 +62,14 @@ function ImageUpload() {
       const response = await getImagesByVisit(visitId)
       const allImages = response.data.data || []
       
-      // Convert all MinIO paths to proxy URLs
-      const API_URL = import.meta.env.VITE_API_URL || 'http://192.168.1.17:3000';
-      const convertToProxyUrl = (url) => {
-        if (!url) return url;
-        
-        // Always use proxy for consistency
-        // Extract path after bucket name from any URL format
-        let path = url;
-        
-        // If it's a full URL (presigned or not), extract the path
-        if (url.startsWith('http')) {
-          const match = url.match(/\/nhakhoa\/(.+?)(\?|$)/);
-          if (match) {
-            path = match[1];
-          } else {
-            // Can't parse, return as is
-            return url;
-          }
-        } else {
-          // Regular MinIO path format
-          path = url.replace(/^\/nhakhoa\//, '');
-        }
-        
-        // Add cache buster timestamp to force reload
-        return `${API_URL}/api/images/proxy/${path}?t=${Date.now()}`;
-      };
-      
-      const allImagesWithProxy = allImages.map(img => ({
-        ...img,
-        url: convertToProxyUrl(img.url),
-        url_processed: convertToProxyUrl(img.url_processed)
-      }));
-      
+      const allImagesWithProxy = allImages.map(withImageUrls);
       setImages(allImagesWithProxy)
       const rawImagesData = allImagesWithProxy.filter(img => img.image_category === 'raw')
       setRawImages(rawImagesData)
       setStainedImages(allImagesWithProxy.filter(img => img.image_category === 'stained'))
       
       // Update processedImages - use rawImages that have url_processed
-      const processedImagesData = rawImagesData.filter(img => img.url_processed)
+      const processedImagesData = rawImagesData.filter(canViewProcessed)
       setProcessedImages(processedImagesData)
       
       // ...existing code...
@@ -149,14 +85,22 @@ function ImageUpload() {
       if (result.success) {
         toast.success('Đã enqueue job xử lý ảnh');
 
-        const { promise: pollPromise } = imageService.pollProcessingStatus(
+        pollingRef.current?.stop();
+        const poller = imageService.pollProcessingStatus(
           visitId,
           (statusData) => {
             console.log('Processing status:', statusData);
-          }
+          },
+          { jobId: result.data.jobId }
         );
-
-        const finalStatus = await pollPromise;
+        pollingRef.current = poller;
+        const finalStatus = await poller.promise;
+        await loadImages();
+        if (['partial', 'review_required'].includes(finalStatus.status)) {
+          const reasons = finalStatus.results?.filter(r => r.status !== 'completed').map(r => r.reason).join('; ');
+          toast.error(reasons || 'Một số ảnh cần kiểm tra annotations.');
+          return { success: false, status: finalStatus.status };
+        }
         if (finalStatus.status === 'completed') {
           toast.success('Xử lý ảnh thành công!');
           await loadImages();

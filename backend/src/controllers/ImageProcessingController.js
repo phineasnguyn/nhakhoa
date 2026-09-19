@@ -1,4 +1,5 @@
 const { Image } = require('../models');
+const { overlayReady } = require('../services/imagePresentation');
 
 const httpError = (statusCode, message) => Object.assign(new Error(message), { statusCode });
 
@@ -177,18 +178,23 @@ class ImageProcessingController {
       const database = this.getDatabase();
       const queue = this.getQueue();
       const { visitId } = req.params;
+      const requestedJobId = req.query?.jobId;
+      if (requestedJobId && !/^\d+$/.test(String(requestedJobId))) {
+        return res.status(400).json({ success: false, error: 'Invalid jobId' });
+      }
 
       const latestJobResult = await database.query(
         `SELECT * FROM processing_jobs
-         WHERE visit_id = $1
+         WHERE visit_id = $1 ${requestedJobId ? 'AND id = $2' : ''}
          ORDER BY created_at DESC
          LIMIT 1`,
-        [visitId]
+        requestedJobId ? [visitId, requestedJobId] : [visitId]
       );
 
       if (latestJobResult.rows.length === 0) {
+        if (requestedJobId) return res.status(404).json({ success: false, error: 'Job not found' });
         const rawImages = await Image.findByCategory(visitId, 'raw');
-        const processedCount = rawImages.filter((img) => img.url_processed).length;
+        const processedCount = rawImages.filter((img) => overlayReady(img) || img.url_processed).length;
 
         return res.json({
           success: true,
@@ -206,7 +212,7 @@ class ImageProcessingController {
 
       let bullmqState = null;
       try {
-        const bullJob = await queue.getJob(job.bullmq_job_id);
+        const bullJob = await queue.getJob(job.bullmq_job_id || String(job.id));
         if (bullJob) {
           bullmqState = await bullJob.getState();
         }
@@ -216,12 +222,13 @@ class ImageProcessingController {
 
       let status = job.status;
       if (bullmqState === 'active') status = 'processing';
-      else if (bullmqState === 'completed') status = 'completed';
+      else if (bullmqState === 'completed' && !['partial', 'review_required'].includes(job.status)) status = 'completed';
       else if (bullmqState === 'failed') status = 'failed';
+      else if (['waiting', 'delayed', 'prioritized'].includes(bullmqState)) status = 'queued';
 
       const images = await Image.findByVisitId(visitId);
       const rawImages = images.filter((img) => img.image_category === 'raw');
-      const processedCount = rawImages.filter((img) => img.url_processed).length;
+      const processedCount = rawImages.filter((img) => overlayReady(img) || img.url_processed).length;
 
       res.json({
         success: true,
@@ -230,7 +237,8 @@ class ImageProcessingController {
           status,
           progress: job.progress,
           totalImages: job.total_images,
-          processedImages: job.processed_images || processedCount,
+          processedImages: job.processed_images ?? processedCount,
+          results: job.result_data?.results || [],
           errorMessage: job.error_message,
           createdAt: job.created_at,
           startedAt: job.started_at,

@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "test:unit": "node src/services/subboxMapper.test.js && node --test src/controllers/ImageProcessingController.test.js src/services/patientDeletionService.test.js src/services/processedImageReferenceService.test.js src/services/storageDeletionService.test.js"
+    "test:unit": "node src/services/subboxMapper.test.js && node --test src/controllers/ImageProcessingController.test.js src/controllers/ImageProxyController.test.js src/services/imageOverlayService.test.js src/services/imageStorageAudit.test.js src/services/patientDeletionService.test.js src/services/processedImageReferenceService.test.js src/services/storageDeletionService.test.js src/workers/processingJobReconciler.test.js"
   },
   "dependencies": {
     "adm-zip": "^0.5.16",

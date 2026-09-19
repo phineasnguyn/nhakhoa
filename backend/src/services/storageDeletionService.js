@@ -93,6 +93,10 @@ function createStorageDeletionService(dependencies = {}) {
          SELECT url_processed FROM images WHERE url_processed IS NOT NULL
          UNION ALL
          SELECT annotation_file_url FROM visits WHERE annotation_file_url IS NOT NULL
+         UNION ALL
+         SELECT source_url FROM image_source_history
+         UNION ALL
+         SELECT image_snapshot->>'url_processed' FROM image_source_history
        )
        SELECT EXISTS (
          SELECT 1

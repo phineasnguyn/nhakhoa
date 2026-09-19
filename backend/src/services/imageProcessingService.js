@@ -9,6 +9,10 @@ const fs = require('fs');
 const path = require('path');
 
 class ImageProcessingService {
+  async computeOverlay(metadata) {
+    const response = await this.client.post('/api/process/overlay-metadata', metadata, { timeout: 30000 });
+    return response.data;
+  }
   constructor() {
     this.baseURL = process.env.IMAGE_PROCESSING_SERVICE_URL || 'http://localhost:8001';
     this.client = axios.create({

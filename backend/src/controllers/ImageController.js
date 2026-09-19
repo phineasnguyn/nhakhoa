@@ -1,12 +1,13 @@
 const { Image } = require('../models');
 const db = require('../config/database');
+const { presentImage, groupAnnotations } = require('../services/imagePresentation');
 
 class ImageController {
     async getAllImages(req, res) {
         try {
             const { page, limit, visitId, validationStatus, imageCategory, sortBy, sortOrder } = req.query;
             const result = await Image.findAll({ page, limit, visitId, validationStatus, imageCategory, sortBy, sortOrder });
-            res.json({ success: true, ...result });
+            res.json({ success: true, ...result, data: result.data.map(presentImage) });
         } catch (error) {
             console.error('Error fetching images:', error);
             res.status(500).json({ success: false, error: error.message });
@@ -16,7 +17,11 @@ class ImageController {
     async getImagesByVisitId(req, res) {
         try {
             const { visitId } = req.params;
-            const images = await Image.findByVisitId(visitId);
+            const rows = (await db.query(`SELECT i.*, COALESCE(
+                (SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM image_annotations a WHERE a.image_id=i.id), '[]'::jsonb
+                ) AS overlay_annotations FROM images i WHERE visit_id=$1 AND deleted_at IS NULL
+                ORDER BY image_category,image_index`, [visitId])).rows;
+            const images = rows.map(({ overlay_annotations, ...image }) => ({ ...presentImage(image), teeth: groupAnnotations(overlay_annotations) }));
             
             // Don't generate presigned URLs - let frontend use proxy
             // The proxy endpoint /api/images/proxy/* will handle MinIO access
@@ -38,7 +43,7 @@ class ImageController {
                 });
             }
             
-            const images = await Image.findByCategory(visitId, category);
+            const images = (await Image.findByCategory(visitId, category)).map(presentImage);
             
             // Don't generate presigned URLs - let frontend use proxy
             res.json({ success: true, data: images });
@@ -159,92 +164,15 @@ class ImageController {
 
     async rotateImage(req, res) {
         try {
-            const { id } = req.params;
-            const { rotation } = req.body;
-
-            if (!req.file) {
-                return res.status(400).json({
-                    success: false,
-                    error: 'Rotated image file is required'
-                });
-            }
-
-            if (!rotation || ![90, 180, 270].includes(parseInt(rotation))) {
-                return res.status(400).json({
-                    success: false,
-                    error: 'Valid rotation angle (90, 180, 270) is required'
-                });
-            }
-
-            // Get existing image from database
-            const existingImage = await Image.findById(id);
-            if (!existingImage) {
-                return res.status(404).json({
-                    success: false,
-                    error: 'Image not found'
-                });
-            }
-
-            // Upload rotated image to MinIO (overwrite existing)
-            const storageService = require('../services/storage');
-            
-            // Extract object name from existing URL
-            // URL format: /nhakhoa/visits/252/raw_lower_left_jpg.rf.xxx.jpg
-            let objectName = existingImage.url;
-            if (objectName.startsWith('/nhakhoa/')) {
-                objectName = objectName.substring(9); // Remove /nhakhoa/ prefix
-            }
-
-            const uploadResult = await storageService.uploadFile(
-                objectName,
-                req.file.buffer,
-                {
-                    'Content-Type': req.file.mimetype,
-                    'Content-Length': req.file.size
-                }
-            );
-
-            if (!uploadResult.success) {
-                return res.status(500).json({
-                    success: false,
-                    error: 'Failed to upload rotated image: ' + uploadResult.error
-                });
-            }
-
-            // Clear processed data and reset processing status
-            // This ensures the rotated RAW image will be reprocessed with correct orientation
-            const clearProcessedQuery = `
-                UPDATE images 
-                SET 
-                    url_processed = NULL,
-                    processing_status = 'pending',
-                    processed_at = NULL
-                WHERE id = $1
-                RETURNING *
-            `;
-            const clearResult = await db.query(clearProcessedQuery, [id]);
-
-            // Delete only subboxes (will be regenerated), keep parent tooth annotations
-            const deleteAnnotationsQuery = `
-                DELETE FROM image_annotations 
-                WHERE image_id = $1 
-                AND parent_annotation_id IS NOT NULL
-            `;
-            await db.query(deleteAnnotationsQuery, [id]);
-
-            const updatedImage = clearResult.rows[0];
-
-            res.json({
-                success: true,
-                data: updatedImage,
-                message: `Image rotated ${rotation}° successfully. Processed data and annotations cleared. Ready for reprocessing.`,
-                needsReprocessing: true
-            });
+            const service = require('../services/imageRotationService').createImageRotationService();
+            const image = await service.rotate(Number(req.params.id), Number(req.body.rotation),
+                req.body.image_revision, req.body.annotation_revision);
+            res.json({ success: true, data: image, needsReprocessing: false });
         } catch (error) {
-            console.error('Error rotating image:', error);
-            res.status(500).json({ success: false, error: error.message });
+            res.status(error.statusCode || 500).json({ success: false, error: error.message });
         }
     }
+
 }
 
 module.exports = new ImageController();
