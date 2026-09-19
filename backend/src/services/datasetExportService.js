@@ -162,7 +162,7 @@ function sanitizeFilename(filename) {
 function extractObjectName(url) {
   // URL format: /nhakhoa/visits/123/image.jpg
   // MinIO object format: visits/123/image.jpg (without bucket name)
-  return url.replace(/^\/nhakhoa\//, '');
+  return storage.extractObjectName(url);
 }
 
 /**

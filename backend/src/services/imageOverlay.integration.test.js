@@ -125,6 +125,28 @@ test('overlay, retry, rotations and storage audit on isolated PostgreSQL/MinIO/R
     const audit=await auditImageStorage({pool:db.pool,storage,identity:{database:process.env.DB_NAME}});
     assert.equal(audit.candidateBytes,0,'history and unready consumer protect the shared legacy object');
     assert.equal(audit.objects.length,1);
+    // Export the current clean source; numeric labels retain their meaning and null is excluded.
+    await db.query("UPDATE images SET original_filename='fixture_'||id||'.jpg'");
+    const exportedRegions=(await db.query('SELECT id FROM image_annotations WHERE parent_annotation_id=10 ORDER BY id')).rows;
+    await db.query('UPDATE image_annotations SET plaque_status=0 WHERE id=$1',[exportedRegions[0].id]);
+    await db.query('UPDATE image_annotations SET plaque_status=NULL WHERE id=$1',[exportedRegions[1].id]);
+    const {generateCOCODataset,generateYOLODataset}=require('./datasetExportService');
+    const params={visitIds:[1],splitRatio:{train:1,val:0,test:0},filters:{annotationStatus:'any'}};
+    const source=await storage.downloadFile(storage.extractObjectName((await getImage()).url));
+    const Zip=require('adm-zip');
+    const coco=await generateCOCODataset(params);
+    try {
+      const zip=new Zip(coco.zipPath);
+      const annotations=JSON.parse(zip.readAsText('train/annotations.json')).annotations;
+      assert.deepEqual(annotations.map(a=>a.category_id).sort(),[0,1,1]);
+      assert.deepEqual(zip.readFile('train/fixture_1.jpg'),source);
+    } finally { await require('node:fs/promises').unlink(coco.zipPath); }
+    const yolo=await generateYOLODataset(params);
+    try {
+      const zip=new Zip(yolo.zipPath);
+      assert.deepEqual(zip.readFile('images/train/fixture_1.jpg'),source);
+      assert.deepEqual(zip.readAsText('labels/train/fixture_1.txt').trim().split('\n').map(l=>Number(l.split(' ')[0])).sort(),[0,1,1]);
+    } finally { await require('node:fs/promises').unlink(yolo.zipPath); }
     console.log(JSON.stringify({initialObjects:before.length,objectsAfterProcessing:before.length,
       initialBytes:before.reduce((n,o)=>n+o.size,0),rotationHistory:3,jobStatus:result.status,
       rssNode:process.memoryUsage().rss}));

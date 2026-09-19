@@ -1,4 +1,5 @@
 import apiClient from './apiClient';
+import { imageApiUrl } from './imagePresentation';
 
 /**
  * Image Service
@@ -81,7 +82,7 @@ class ImageService {
     console.log('imageService.processImages called with visitId:', visitId);
     
     try {
-      const url = `/api/visits/${visitId}/process-images`;
+      const url = imageApiUrl(`visits/${visitId}/process-images`);
       const response = await apiClient.post(url, {}, {
         timeout: 30000
       });
@@ -97,7 +98,12 @@ class ImageService {
    * Get processing status
    */
   async getProcessingStatus(visitId, jobId, signal) {
-    const response = await apiClient.get(`/api/visits/${visitId}/processing-status`, { params: { jobId }, signal, timeout: 15000 });
+    const response = await apiClient.get(imageApiUrl(`visits/${visitId}/processing-status`), { params: { jobId }, signal, timeout: 15000 });
+    return response.data;
+  }
+
+  async rotateImage(imageId, payload) {
+    const response = await apiClient.post(imageApiUrl(`images/${imageId}/rotate`), payload, { timeout: 60000 });
     return response.data;
   }
 

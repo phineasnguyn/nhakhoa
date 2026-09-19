@@ -5,6 +5,7 @@ import { FiUpload, FiX, FiZoomIn, FiChevronLeft, FiChevronRight, FiRotateCw, FiR
 import AnnotationCanvas from '../../../components/AnnotationCanvas';
 import { canViewProcessed, isOverlay, displayImageUrl, withImageUrls } from '../../../services/imagePresentation';
 import annotationService from '../../../services/annotationService';
+import imageService from '../../../services/imageService';
 import { useAuth } from '../../auth/hooks/useAuth';
 import toast from 'react-hot-toast';
 
@@ -93,25 +94,11 @@ const ProcessedImageViewer = ({
     setIsRotating(true);
     setRecentlyRotated(true);
     try {
-      // Send the angle and revisions; the server transforms the original once.
-      const formData = new FormData();
-      formData.append('imageId', lightboxImage.imageId);
-      formData.append('rotation', rotation);
-      formData.append('image_revision', lightboxImage.image.image_revision);
-      formData.append('annotation_revision', lightboxImage.image.annotation_revision);
-
-      const API_URL = import.meta.env.VITE_API_URL || 'http://100.93.48.110:3001';
-      const response = await fetch(`${API_URL}/api/images/${lightboxImage.imageId}/rotate`, {
-        method: 'POST',
-        body: formData,
-        credentials: 'include'
+      const result = await imageService.rotateImage(lightboxImage.imageId, {
+        rotation,
+        image_revision: lightboxImage.image.image_revision,
+        annotation_revision: lightboxImage.image.annotation_revision,
       });
-
-      if (!response.ok) {
-        throw new Error('Failed to save rotated image');
-      }
-
-      const result = await response.json();
 
       toast.success('Đã lưu ảnh xoay thành công!');
       setRotation(0);

@@ -1,4 +1,5 @@
 import apiClient from './apiClient';
+import { imageApiUrl } from './imagePresentation';
 
 const annotationService = {
   /**
@@ -6,7 +7,7 @@ const annotationService = {
    */
   async getImageAnnotations(imageId) {
     try {
-      const response = await apiClient.get(`api/images/${imageId}/annotations`);
+      const response = await apiClient.get(imageApiUrl(`images/${imageId}/annotations`));
       return response.data;
     } catch (error) {
       console.error('Error getting image annotations:', error);
@@ -19,7 +20,7 @@ const annotationService = {
    */
   async updatePlaqueStatus(annotationId, plaqueStatus, userId) {
     try {
-      const response = await apiClient.put(`api/annotations/${annotationId}/plaque`, {
+      const response = await apiClient.put(imageApiUrl(`annotations/${annotationId}/plaque`), {
         plaque_status: plaqueStatus,
         user_id: userId
       });

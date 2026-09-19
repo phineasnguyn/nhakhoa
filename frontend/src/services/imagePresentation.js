@@ -1,5 +1,9 @@
 export const canViewProcessed = image => image?.render_mode === 'overlay' || image?.render_mode === 'legacy_bitmap';
 export const isOverlay = image => image?.render_mode === 'overlay';
+export function imageApiUrl(path) {
+  const base = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '').replace(/\/api$/, '');
+  return new URL(`${base}/api/${path.replace(/^\//, '')}`, window.location.origin).href;
+}
 export const displayImageUrl = (image, mode) => mode === 'processed' && image?.render_mode === 'legacy_bitmap'
   ? image.url_processed : image?.url;
 
