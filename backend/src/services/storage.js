@@ -273,6 +273,8 @@ const ensureUploadByHash = async (buffer, prefix = 'processed', ext = 'jpg', con
 };
 
 module.exports = {
+  statFile: objectName => minioClient.statObject(BUCKET_NAME, objectName),
+  openFileStream: objectName => minioClient.getObject(BUCKET_NAME, objectName),
   uploadFile,
   uploadFiles,
   uploadFromBuffer,

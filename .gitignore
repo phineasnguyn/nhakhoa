@@ -50,3 +50,4 @@ temp/
 
 patient_add_0001/
 miniodata/
+*.manifest.json

@@ -17,6 +17,7 @@ import numpy as np
 from config import Config
 from processors import ToothDivider, DataAugmenter
 from utils.yolo_helper import read_yolo_annotation
+from processors.overlay_geometry import compute_overlay
 
 # Khởi tạo FastAPI app
 app = FastAPI(
@@ -40,6 +41,14 @@ tooth_divider = ToothDivider(
     padding_px=Config.PADDING_PX
 )
 data_augmenter = DataAugmenter()
+
+
+@app.post('/api/process/overlay-metadata')
+async def overlay_metadata(payload: dict):
+    try:
+        return compute_overlay(payload)
+    except (ValueError, TypeError, KeyError) as error:
+        raise HTTPException(status_code=422, detail=str(error))
 
 
 @app.get("/")

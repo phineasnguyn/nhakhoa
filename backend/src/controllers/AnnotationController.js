@@ -1,5 +1,6 @@
 const { Annotation, Image } = require('../models');
 const { pool } = require('../config/database');
+const { presentImage, groupAnnotations } = require('../services/imagePresentation');
 
 class AnnotationController {
   /**
@@ -12,13 +13,15 @@ class AnnotationController {
     try {
       const { imageId } = req.params;
       
+      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
       // Get image info
       const imageResult = await client.query(
-        'SELECT id, url, url_processed, width, height FROM images WHERE id = $1',
+        'SELECT * FROM images WHERE id = $1 AND deleted_at IS NULL',
         [imageId]
       );
       
       if (imageResult.rows.length === 0) {
+        await client.query('COMMIT');
         return res.status(404).json({
           success: false,
           error: 'Image not found'
@@ -50,49 +53,7 @@ class AnnotationController {
         ORDER BY a.parent_annotation_id NULLS FIRST, a.id
       `, [imageId]);
       
-      // Group by teeth (parent annotations)
-      const teeth = [];
-      const annotationsMap = new Map();
-      
-      annotationsResult.rows.forEach(row => {
-        if (!row.parent_annotation_id) {
-          // This is a tooth (parent)
-          const tooth = {
-            annotation_id: row.id,
-            category_id: row.category_id,
-            category_name: row.category_name,
-            bbox: row.bbox,
-            area: row.area,
-            source_type: row.source_type,
-            subboxes: []
-          };
-          teeth.push(tooth);
-          annotationsMap.set(row.id, tooth);
-        }
-      });
-      
-      // Add subboxes to their parent teeth
-      annotationsResult.rows.forEach(row => {
-        if (row.parent_annotation_id) {
-          const parent = annotationsMap.get(row.parent_annotation_id);
-          if (parent) {
-            parent.subboxes.push({
-              subbox_id: row.id,
-              region: row.subbox_region,
-              bbox: row.bbox,
-              area: row.area,
-              plaque_status: row.plaque_status,
-              predicted_plaque: row.predicted_plaque,
-              annotated_by: row.annotated_by ? {
-                id: row.annotated_by,
-                name: row.annotated_by_name
-              } : null,
-              annotated_at: row.annotated_at
-            });
-          }
-        }
-      });
-      
+      await client.query('COMMIT');
       // Calculate progress stats
       const totalSubboxes = annotationsResult.rows.filter(r => r.parent_annotation_id).length;
       // Consider a subbox annotated only when a clinician annotated it (annotated_by IS NOT NULL)
@@ -103,14 +64,8 @@ class AnnotationController {
       res.json({
         success: true,
         data: {
-          image: {
-            id: image.id,
-            url: image.url,
-            url_processed: image.url_processed,
-            width: image.width,
-            height: image.height
-          },
-          teeth,
+          image: presentImage(image),
+          teeth: groupAnnotations(annotationsResult.rows),
           progress: {
             total: totalSubboxes,
             annotated: annotatedSubboxes,
@@ -121,6 +76,7 @@ class AnnotationController {
       });
       
     } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
       console.error('Error getting image annotations:', err);
       res.status(500).json({
         success: false,
@@ -163,6 +119,7 @@ class AnnotationController {
       }
       
       await client.query('BEGIN');
+      await client.query('SELECT id FROM images WHERE id=(SELECT image_id FROM image_annotations WHERE id=$1) FOR UPDATE', [annotationId]);
       
       // Get current value for history
       const currentResult = await client.query(
@@ -235,6 +192,7 @@ class AnnotationController {
       }
       
       await client.query('BEGIN');
+      await client.query('SELECT id FROM images WHERE id=$1 AND deleted_at IS NULL FOR UPDATE', [imageId]);
       
       let updatedCount = 0;
       

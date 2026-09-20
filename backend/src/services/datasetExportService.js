@@ -162,7 +162,7 @@ function sanitizeFilename(filename) {
 function extractObjectName(url) {
   // URL format: /nhakhoa/visits/123/image.jpg
   // MinIO object format: visits/123/image.jpg (without bucket name)
-  return url.replace(/^\/nhakhoa\//, '');
+  return storage.extractObjectName(url);
 }
 
 /**
@@ -658,7 +658,7 @@ async function generateCOCODataset(params) {
             
             // Determine class based on plaque_status
             // plaque_status: 'plaque' | 'no_plaque' | null
-            const categoryId = (subbox.plaque_status === 'plaque') ? 1 : 0;
+            const categoryId = (subbox.plaque_status === 1 || subbox.plaque_status === 'plaque') ? 1 : 0;
             
             cocoData.annotations.push({
               id: annotationId++,
