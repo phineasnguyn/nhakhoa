@@ -1,5 +1,16 @@
 export const canViewProcessed = image => image?.render_mode === 'overlay' || image?.render_mode === 'legacy_bitmap';
 export const isOverlay = image => image?.render_mode === 'overlay';
+
+// Legacy records can still be labelled from their stored subboxes without
+// baking another bitmap or declaring the image overlay-ready.
+export function canRenderAnnotations(image, teeth = image?.teeth || []) {
+  return isOverlay(image) || (image?.render_mode === 'legacy_bitmap'
+    && teeth.some(tooth => (tooth.subboxes || []).some(subbox => {
+      const box = subbox.bbox;
+      return Array.isArray(box) && box.length === 4 && box.every(Number.isFinite)
+        && box[2] > 0 && box[3] > 0;
+    })));
+}
 export function imageApiUrl(path) {
   const base = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '').replace(/\/api$/, '');
   return new URL(`${base}/api/${path.replace(/^\//, '')}`, window.location.origin).href;

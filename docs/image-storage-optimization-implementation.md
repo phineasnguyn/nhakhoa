@@ -20,7 +20,7 @@ Migration 011 bổ sung:
 - bảng image_source_history;
 - trigger invalidation khi nguồn ảnh hoặc hình học annotation thay đổi.
 
-Các trường mới có giá trị mặc định tương thích dữ liệu cũ. url_processed vẫn được giữ để fallback trong giai đoạn chuyển đổi.
+Các trường mới có giá trị mặc định tương thích dữ liệu cũ. url_processed vẫn được giữ để fallback trong giai đoạn chuyển đổi. Khi hình học annotation thay đổi, legacy_image_revision được đặt về 0 để loại bitmap cũ khỏi hiển thị; URL và object vẫn được giữ cho rollback. Chỉ đổi nhãn không vô hiệu hóa hình học. Migration 011 có thể chạy lại để cập nhật trigger.
 
 ### Geometry service
 
@@ -41,7 +41,7 @@ imageOverlayService đọc ảnh và annotations trong snapshot nhất quán. N�
 
 Trước khi ghi kết quả, service khóa patient, visit và image theo cùng thứ tự với luồng xóa bệnh nhân, sau đó kiểm tra lại image revision và annotation revision.
 
-Nhóm subbox hợp lệ đã tồn tại được giữ nguyên. Service chỉ tạo bốn vùng cho parent còn thiếu và đặt trạng thái review khi dữ liệu không đủ rõ ràng.
+Nhóm subbox hợp lệ đã tồn tại được giữ nguyên. Ngoài kiểm tra parent, biên ảnh và bốn tên vùng khác nhau, service từ chối subbox trùng hoặc chồng diện tích; các vùng được phép chung cạnh. Quy tắc này áp dụng cả vùng có sẵn, kết quả geometry service và overlay đã được đánh dấu hoàn tất. Service chỉ tạo bốn vùng cho parent còn thiếu và đặt trạng thái review khi dữ liệu không đủ rõ ràng.
 
 ### BullMQ
 
@@ -58,7 +58,7 @@ Retry đang chờ được trả là queued để frontend không kết luận t
 
 ### API và frontend
 
-API trình bày rõ render_mode: raw, legacy_bitmap hoặc overlay.
+API trình bày rõ render_mode: raw, legacy_bitmap hoặc overlay. Ảnh legacy có subbox vẫn được sửa nhãn trên ảnh nguồn cùng lớp SVG; không cần tạo bitmap mới hoặc chuyển trạng thái thành overlay-ready. Nếu không có subbox, frontend tiếp tục hiển thị bitmap legacy. Lightbox tải snapshot hiện tại trước khi chọn cách hiển thị để tránh dùng lại bitmap vừa bị vô hiệu hóa.
 
 Frontend chuẩn hóa URL ảnh qua proxy và dùng revision làm version cache. Chế độ overlay dùng thẻ IMG làm bitmap nền và SVG làm lớp vector. Grid và lightbox dùng cùng URL nguồn; hover hoặc sửa nhãn chỉ cập nhật vector.
 

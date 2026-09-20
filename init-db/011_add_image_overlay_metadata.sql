@@ -6,6 +6,7 @@ ALTER TABLE images ADD COLUMN IF NOT EXISTS overlay_schema_version INTEGER;
 ALTER TABLE images ADD COLUMN IF NOT EXISTS overlay_review_reason TEXT;
 ALTER TABLE images ADD COLUMN IF NOT EXISTS annotations_verified_empty BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE images ADD COLUMN IF NOT EXISTS legacy_image_revision BIGINT NOT NULL DEFAULT 1;
+-- Zero invalidates a legacy bitmap after geometry changes, retaining its URL for rollback.
 
 CREATE TABLE IF NOT EXISTS image_source_history (
   id BIGSERIAL PRIMARY KEY,
@@ -42,16 +43,17 @@ BEGIN
   ELSE target_id := NEW.image_id; END IF;
   geometry_changed := TG_OP <> 'UPDATE';
   IF TG_OP = 'UPDATE' THEN
-    geometry_changed := (NEW.bbox, NEW.parent_annotation_id, NEW.image_id, NEW.category_id, NEW.subbox_region)
-      IS DISTINCT FROM (OLD.bbox, OLD.parent_annotation_id, OLD.image_id, OLD.category_id, OLD.subbox_region);
+    geometry_changed := (NEW.bbox, NEW.parent_annotation_id, NEW.image_id, NEW.category_id, NEW.category_name, NEW.subbox_region)
+      IS DISTINCT FROM (OLD.bbox, OLD.parent_annotation_id, OLD.image_id, OLD.category_id, OLD.category_name, OLD.subbox_region);
   END IF;
   UPDATE images SET annotation_revision = annotation_revision + 1,
+    legacy_image_revision = CASE WHEN geometry_changed THEN 0 ELSE legacy_image_revision END,
     processed_image_revision = CASE WHEN geometry_changed THEN NULL ELSE processed_image_revision END,
     overlay_schema_version = CASE WHEN geometry_changed THEN NULL ELSE overlay_schema_version END,
     processing_status = CASE WHEN geometry_changed THEN 'pending' ELSE processing_status END
   WHERE id = target_id;
   IF TG_OP = 'UPDATE' AND OLD.image_id IS DISTINCT FROM NEW.image_id THEN
-    UPDATE images SET annotation_revision = annotation_revision + 1,
+    UPDATE images SET annotation_revision = annotation_revision + 1, legacy_image_revision = 0,
       processed_image_revision = NULL, overlay_schema_version = NULL, processing_status = 'pending'
     WHERE id = OLD.image_id;
   END IF;

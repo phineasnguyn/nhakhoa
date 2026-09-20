@@ -3,7 +3,7 @@ import Button from '../../../components/ui/Button';
 import LoadingSpinner from '../../../components/ui/LoadingSpinner';
 import { FiUpload, FiX, FiZoomIn, FiChevronLeft, FiChevronRight, FiRotateCw, FiRotateCcw, FiCheck } from 'react-icons/fi';
 import AnnotationCanvas from '../../../components/AnnotationCanvas';
-import { canViewProcessed, isOverlay, displayImageUrl, withImageUrls } from '../../../services/imagePresentation';
+import { canViewProcessed, canRenderAnnotations, displayImageUrl, withImageUrls } from '../../../services/imagePresentation';
 import annotationService from '../../../services/annotationService';
 import imageService from '../../../services/imageService';
 import { useAuth } from '../../auth/hooks/useAuth';
@@ -360,7 +360,8 @@ const ProcessedImageViewer = ({
         return false;
       });
 
-      const imageUrl = displayImageUrl(image, viewMode);
+      const showAnnotations = viewMode === 'processed' && canRenderAnnotations(image);
+      const imageUrl = showAnnotations ? image.url : displayImageUrl(image, viewMode);
       const openImage = event => {
         event.stopPropagation();
         const stainedImage = findStainedImage(pos);
@@ -402,7 +403,7 @@ const ProcessedImageViewer = ({
                 borderRadius: '3px',
                 position: 'relative'
               }}>
-                {viewMode === 'processed' && isOverlay(image) ? (
+                {showAnnotations ? (
                   <AnnotationCanvas imageUrl={imageUrl} teeth={image.teeth || []}
                     imageWidth={image.width} imageHeight={image.height} onImageClick={openImage} />
                 ) : (
@@ -879,12 +880,16 @@ const ProcessedImageViewer = ({
                 {viewMode === 'processed' ? '🔍 Processed' : '📷 Raw'}
               </div>
               {(() => {
-                const shouldShowCanvas = viewMode === 'processed' && isOverlay(lightboxImage.image);
-                const displayUrl = displayImageUrl({ ...lightboxImage.image, url: lightboxImage.url, url_processed: lightboxImage.urlProcessed }, viewMode);
-                if (shouldShowCanvas && annotationsStatus !== 'ready') return <p role="status" style={{ color: 'white' }}>
+                const processedView = viewMode === 'processed';
+                const shouldShowCanvas = processedView && canRenderAnnotations(lightboxImage.image, annotations);
+                // Fetch a current image/annotation snapshot before choosing the
+                // legacy fallback: geometry may have changed since the grid loaded.
+                if (processedView && canViewProcessed(lightboxImage.image) && annotationsStatus !== 'ready') return <p role="status" style={{ color: 'white' }}>
                   {annotationsStatus === 'error' ? 'Không tải được khung đánh giá. Vui lòng mở lại ảnh.' : 'Đang tải khung đánh giá…'}
                 </p>;
 
+                const displayUrl = shouldShowCanvas ? lightboxImage.url
+                  : displayImageUrl({ ...lightboxImage.image, url: lightboxImage.url, url_processed: lightboxImage.urlProcessed }, viewMode);
                 return shouldShowCanvas ? (
                   <div style={{
                     transform: `rotate(${rotation}deg)`,

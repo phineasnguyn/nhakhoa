@@ -12,6 +12,14 @@ function contained(child, parent) {
     && child[0] + child[2] <= parent[0] + parent[2] + .01
     && child[1] + child[3] <= parent[1] + parent[3] + .01;
 }
+function hasOverlappingBoxes(boxes) {
+  return boxes.some((box, index) => boxes.slice(index + 1).some(other => {
+    const width = Math.min(box[0] + box[2], other[0] + other[2]) - Math.max(box[0], other[0]);
+    const height = Math.min(box[1] + box[3], other[1] + other[3]) - Math.max(box[1], other[1]);
+    // Shared edges and floating-point rounding are allowed; duplicate boxes are not.
+    return box.every((value, i) => value === other[i]) || (width > 1e-6 && height > 1e-6);
+  }));
+}
 class OverlayReviewError extends Error {
   constructor(message) { super(message); this.code = 'OVERLAY_REVIEW_REQUIRED'; }
 }
@@ -38,6 +46,8 @@ function planExistingAnnotations(image, rows) {
     else if (children.length !== 4 || children.some(a => !a.subbox_region)
       || new Set(children.map(a => a.subbox_region)).size !== 4) {
       throw new OverlayReviewError('incomplete_or_ambiguous_existing_regions');
+    } else if (hasOverlappingBoxes(children.map(boxOf))) {
+      throw new OverlayReviewError('overlapping_existing_regions');
     }
   }
   return { missing, brackets };
@@ -66,7 +76,6 @@ function createImageOverlayService(dependencies = {}) {
 
   async function processImage(imageId) {
     let { image, rows } = await snapshot(imageId);
-    if (overlayReady(image)) return { imageId, status: 'completed', reused: true };
     if (!(image.width > 0 && image.height > 0)) {
       const sharp = dependencies.sharp || require('sharp');
       const buffer = await storage.downloadFile(storage.extractObjectName(image.url));
@@ -83,7 +92,23 @@ function createImageOverlayService(dependencies = {}) {
       if (!saved.rows.length) throw Object.assign(new Error('Image changed while reading metadata'), { code: 'STALE_INPUT' });
       ({ image, rows } = await snapshot(imageId));
     }
-    const { missing, brackets } = planExistingAnnotations(image, rows);
+    let plan;
+    try {
+      plan = planExistingAnnotations(image, rows);
+    } catch (error) {
+      // Recheck cached overlays too. A previous processor may have accepted
+      // invalid geometry; never overwrite a newer image/annotation snapshot.
+      if (error.code === 'OVERLAY_REVIEW_REQUIRED' && overlayReady(image)) {
+        await pool.query(
+          `UPDATE images SET processing_status='pending',processed_image_revision=NULL,
+           overlay_schema_version=NULL,legacy_image_revision=0,overlay_review_reason=$4
+           WHERE id=$1 AND image_revision=$2 AND annotation_revision=$3`,
+          [imageId, image.image_revision, image.annotation_revision, error.message]);
+      }
+      throw error;
+    }
+    const { missing, brackets } = plan;
+    if (overlayReady(image) && !missing.length) return { imageId, status: 'completed', reused: true };
     let regions = [];
     if (missing.length) {
       const result = await processing.computeOverlay({
@@ -106,6 +131,7 @@ function createImageOverlayService(dependencies = {}) {
       for (const parent of missing) {
         const group = regions.filter(r => r.parent_id === parent.id);
         if (group.length !== 4 || new Set(group.map(r => r.region)).size !== 4) throw new OverlayReviewError('incomplete_geometry_response');
+        if (hasOverlappingBoxes(group.map(r => r.bbox))) throw new OverlayReviewError('overlapping_generated_regions');
       }
     }
 

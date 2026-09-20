@@ -47,6 +47,7 @@ Trigger tăng revision khi ảnh, kích thước hoặc hình học annotation t
 ## 4. Bảo toàn dữ liệu
 
 - Không xóa rồi tạo lại nhóm subbox đã hợp lệ.
+- Từ chối subbox trùng hoặc chồng diện tích trong cùng một parent; cho phép chung cạnh.
 - Giữ annotation ID, parent ID, nhãn, người gán nhãn, thời gian và audit history.
 - Dữ liệu thiếu hoặc nhập nhằng được đưa về trạng thái review thay vì tự suy đoán.
 - Kết quả rỗng chỉ hợp lệ khi đã được xác nhận rõ.
@@ -73,8 +74,10 @@ Khi xoay 90, 180 hoặc 270 độ, backend:
 Trong giai đoạn chuyển đổi, API trả một trong ba chế độ:
 
 - raw: chưa có kết quả dùng được;
-- legacy_bitmap: tiếp tục dùng bitmap processed cũ;
+- legacy_bitmap: tiếp tục xem ảnh cũ; khi có subbox, dùng ảnh nguồn cộng SVG để sửa nhãn;
 - overlay: dùng ảnh nguồn cộng metadata.
+
+Khi hình học annotation thay đổi, bitmap legacy bị loại khỏi hiển thị bằng revision không hợp lệ; ảnh trở về raw cho đến khi xử lý lại thành công. Thay đổi nhãn đơn thuần không vô hiệu hóa hình học.
 
 Không xóa bitmap legacy trong migration hoặc worker xử lý ảnh. Việc thu hồi object là bước vận hành riêng sau khi đã xác minh overlay, thời gian giữ rollback và tất cả consumer dùng chung bucket.
 
