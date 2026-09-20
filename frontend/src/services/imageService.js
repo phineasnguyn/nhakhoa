@@ -1,4 +1,5 @@
 import apiClient from './apiClient';
+import { imageApiUrl } from './imagePresentation';
 
 /**
  * Image Service
@@ -81,7 +82,7 @@ class ImageService {
     console.log('imageService.processImages called with visitId:', visitId);
     
     try {
-      const url = `/api/visits/${visitId}/process-images`;
+      const url = imageApiUrl(`visits/${visitId}/process-images`);
       const response = await apiClient.post(url, {}, {
         timeout: 30000
       });
@@ -96,44 +97,43 @@ class ImageService {
   /**
    * Get processing status
    */
-  async getProcessingStatus(visitId) {
-    const response = await apiClient.get(`/api/visits/${visitId}/processing-status`);
+  async getProcessingStatus(visitId, jobId, signal) {
+    const response = await apiClient.get(imageApiUrl(`visits/${visitId}/processing-status`), { params: { jobId }, signal, timeout: 15000 });
+    return response.data;
+  }
+
+  async rotateImage(imageId, payload) {
+    const response = await apiClient.post(imageApiUrl(`images/${imageId}/rotate`), payload, { timeout: 60000 });
     return response.data;
   }
 
   /**
    * Poll processing status until completed or failed
    */
-  pollProcessingStatus(visitId, onProgress, intervalMs = 3000) {
-    let stopped = false;
-
+  pollProcessingStatus(visitId, onProgress, { jobId, intervalMs = 3000, timeoutMs = 900000 } = {}) {
+    const controller = new AbortController();
+    const deadline = Date.now() + timeoutMs;
     const poll = async () => {
-      while (!stopped) {
+      let failures = 0;
+      while (!controller.signal.aborted && Date.now() < deadline) {
         try {
-          const result = await this.getProcessingStatus(visitId);
-          const data = result.data;
-
-          if (onProgress) {
-            onProgress(data);
-          }
-
-          if (data.status === 'completed' || data.status === 'failed' || data.status === 'none') {
-            return data;
-          }
-        } catch (err) {
-          console.error('Poll error:', err);
+          const { data } = await this.getProcessingStatus(visitId, jobId, controller.signal);
+          failures = 0;
+          onProgress?.(data);
+          if (['completed', 'failed', 'partial', 'review_required', 'none'].includes(data.status)) return data;
+        } catch (error) {
+          if (controller.signal.aborted || [401, 403, 404].includes(error.response?.status) || ++failures >= 3) throw error;
         }
-
-        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        await new Promise((resolve, reject) => {
+          const abort = () => { clearTimeout(timer); reject(new Error('Đã dừng theo dõi xử lý')); };
+          const timer = setTimeout(() => { controller.signal.removeEventListener('abort', abort); resolve(); }, intervalMs);
+          controller.signal.addEventListener('abort', abort, { once: true });
+          if (controller.signal.aborted) abort();
+        });
       }
+      throw new Error('Hết thời gian theo dõi; job vẫn có thể đang chạy. Vui lòng tải lại trạng thái.');
     };
-
-    const promise = poll();
-
-    return {
-      promise,
-      stop: () => { stopped = true; },
-    };
+    return { promise: poll(), stop: () => controller.abort() };
   }
 }
 

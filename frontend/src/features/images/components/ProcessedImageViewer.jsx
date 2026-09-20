@@ -1,15 +1,17 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Button from '../../../components/ui/Button';
 import LoadingSpinner from '../../../components/ui/LoadingSpinner';
 import { FiUpload, FiX, FiZoomIn, FiChevronLeft, FiChevronRight, FiRotateCw, FiRotateCcw, FiCheck } from 'react-icons/fi';
 import AnnotationCanvas from '../../../components/AnnotationCanvas';
+import { canViewProcessed, canRenderAnnotations, displayImageUrl, withImageUrls } from '../../../services/imagePresentation';
 import annotationService from '../../../services/annotationService';
+import imageService from '../../../services/imageService';
 import { useAuth } from '../../auth/hooks/useAuth';
 import toast from 'react-hot-toast';
 
-const ProcessedImageViewer = ({ 
-  visitId, 
-  rawImages = [], 
+const ProcessedImageViewer = ({
+  visitId,
+  rawImages = [],
   processedImages = [],
   stainedImages = [],
   onProcessClick,
@@ -21,14 +23,16 @@ const ProcessedImageViewer = ({
   const [error, setError] = useState(null);
   const [lightboxImage, setLightboxImage] = useState(null); // { url, label, position, stainedUrl, imageId, image }
   const [annotations, setAnnotations] = useState([]); // teeth array with subboxes
+  const annotationRequest = useRef(0);
+  const [annotationsStatus, setAnnotationsStatus] = useState('idle');
   const [annotationStats, setAnnotationStats] = useState(null);
   const [rotation, setRotation] = useState(0); // Current rotation angle (0, 90, 180, 270)
   const [isRotating, setIsRotating] = useState(false); // Saving rotation in progress
   const [recentlyRotated, setRecentlyRotated] = useState(false); // Flag to suppress warning during rotation
   const { user: currentUser, isAuthenticated } = useAuth();
 
-  const hasProcessed = processedImages.some(img => img.url_processed);
-  
+  const hasProcessed = processedImages.some(canViewProcessed);
+
   const displayImages = viewMode === 'processed' ? processedImages : rawImages;
 
   // Đóng lightbox khi nhấn ESC
@@ -49,16 +53,16 @@ const ProcessedImageViewer = ({
   const findStainedImage = (position) => {
     return stainedImages.find(img => {
       if (img.image_index === position.index) return true;
-      
+
       const imgType = img.image_type?.toLowerCase() || '';
       const posType = position.type.toLowerCase();
-      
+
       if (imgType.includes(posType)) return true;
-      
+
       if (position.altTypes) {
         return position.altTypes.some(alt => imgType.includes(alt.toLowerCase()));
       }
-      
+
       return false;
     });
   };
@@ -78,7 +82,7 @@ const ProcessedImageViewer = ({
 
   const handleSaveRotation = async () => {
     if (rotation === 0) {
-      toast.info('Không có thay đổi góc xoay');
+      toast('Không có thay đổi góc xoay');
       return;
     }
 
@@ -90,56 +94,11 @@ const ProcessedImageViewer = ({
     setIsRotating(true);
     setRecentlyRotated(true);
     try {
-      // Create canvas to rotate image
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.src = lightboxImage.url;
-
-      await new Promise((resolve, reject) => {
-        img.onload = resolve;
-        img.onerror = reject;
+      const result = await imageService.rotateImage(lightboxImage.imageId, {
+        rotation,
+        image_revision: lightboxImage.image.image_revision,
+        annotation_revision: lightboxImage.image.annotation_revision,
       });
-
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-
-      // Adjust canvas size for rotated image
-      if (rotation % 180 === 0) {
-        canvas.width = img.width;
-        canvas.height = img.height;
-      } else {
-        canvas.width = img.height;
-        canvas.height = img.width;
-      }
-
-      // Rotate and draw
-      ctx.translate(canvas.width / 2, canvas.height / 2);
-      ctx.rotate((rotation * Math.PI) / 180);
-      ctx.drawImage(img, -img.width / 2, -img.height / 2);
-
-      // Convert to blob
-      const blob = await new Promise((resolve) => {
-        canvas.toBlob(resolve, 'image/jpeg', 0.95);
-      });
-
-      // Upload rotated image
-      const formData = new FormData();
-      formData.append('image', blob, `rotated_${lightboxImage.imageId}.jpg`);
-      formData.append('imageId', lightboxImage.imageId);
-      formData.append('rotation', rotation);
-
-      const API_URL = import.meta.env.VITE_API_URL || 'http://100.93.48.110:3001';
-      const response = await fetch(`${API_URL}/api/images/${lightboxImage.imageId}/rotate`, {
-        method: 'POST',
-        body: formData,
-        credentials: 'include'
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to save rotated image');
-      }
-
-      const result = await response.json();
 
       toast.success('Đã lưu ảnh xoay thành công!');
       setRotation(0);
@@ -153,7 +112,7 @@ const ProcessedImageViewer = ({
       }
 
       // Show success message after images are reloaded
-      toast.success('Ảnh đã được cập nhật! Đang xử lý lại...');
+      // Existing labels and geometry have already been rotated atomically.
 
       // Automatically trigger reprocessing if needed
       if (result.needsReprocessing && onProcessClick) {
@@ -184,12 +143,12 @@ const ProcessedImageViewer = ({
   const handleProcessClick = async () => {
     setProcessing(true);
     setError(null);
-    
+
     try {
       console.log('Calling onProcessClick...');
       const result = await onProcessClick();
       console.log('onProcessClick result:', result);
-      
+
       // Only set processing to false after receiving result
       if (result && result.success) {
         toast.success(result.message || 'Xử lý ảnh thành công!');
@@ -209,6 +168,9 @@ const ProcessedImageViewer = ({
 
   // Load annotations for an image
   const loadAnnotationsForImage = async (imageId) => {
+    const request = ++annotationRequest.current;
+    setAnnotationsStatus('loading');
+    setAnnotations([]);
     try {
       console.log('🔍 Loading annotations for image:', imageId);
       const result = await annotationService.getImageAnnotations(imageId);
@@ -216,7 +178,14 @@ const ProcessedImageViewer = ({
       console.log('📊 Teeth count:', result.data?.teeth?.length);
       console.log('📊 Progress:', result.data?.progress);
       console.log('🦷 Full teeth structure:', JSON.stringify(result.data?.teeth, null, 2));
+      if (request !== annotationRequest.current) return;
+      setAnnotationsStatus('ready');
       setAnnotations(result.data?.teeth || []);
+      setLightboxImage(current => {
+        if (current?.imageId !== imageId) return current;
+        const image = withImageUrls(result.data.image);
+        return { ...current, image, url: image.url, urlProcessed: image.url_processed };
+      });
       // Ensure percentage is a number
       const progress = result.data?.progress;
       if (progress && typeof progress === 'object') {
@@ -228,6 +197,8 @@ const ProcessedImageViewer = ({
         setAnnotationStats(null);
       }
     } catch (err) {
+      if (request !== annotationRequest.current) return;
+      setAnnotationsStatus('error');
       toast.error('Không thể tải annotations');
       setAnnotations([]);
       setAnnotationStats(null);
@@ -245,7 +216,7 @@ const ProcessedImageViewer = ({
 
     // Optimistic update: immediately update local state for instant UI feedback
     setAnnotations(prev => prev.map(t => {
-      if (t.tooth_id !== tooth.tooth_id) return t;
+      if (t.annotation_id !== tooth.annotation_id) return t;
       return {
         ...t,
         subboxes: t.subboxes.map(sb => {
@@ -263,12 +234,14 @@ const ProcessedImageViewer = ({
         newStatus,
         currentUser.id
       );
+      await loadAnnotationsForImage(lightboxImage.imageId);
+      onImagesUpdate?.();
     } catch (err) {
       console.error('Failed to update plaque status:', err);
       toast.error('Có lỗi xảy ra, đang khôi phục...');
       // Revert optimistic update on failure
       setAnnotations(prev => prev.map(t => {
-        if (t.tooth_id !== tooth.tooth_id) return t;
+        if (t.annotation_id !== tooth.annotation_id) return t;
         return {
           ...t,
           subboxes: t.subboxes.map(sb => {
@@ -283,7 +256,7 @@ const ProcessedImageViewer = ({
   // Navigate between images in lightbox
   const navigateImage = (direction) => {
     if (!lightboxImage) return;
-    
+
     const positions = [
       { index: 1, type: 'upper_right', label: 'Upper Right', altTypes: ['top_right'] },
       { index: 2, type: 'upper_middle', label: 'Upper Middle', altTypes: ['upper_center', 'top_middle'] },
@@ -298,13 +271,13 @@ const ProcessedImageViewer = ({
 
     const currentIndex = positions.findIndex(p => p.index === lightboxImage.position.index);
     let nextIndex = currentIndex + direction;
-    
+
     // Wrap around
     if (nextIndex < 0) nextIndex = positions.length - 1;
     if (nextIndex >= positions.length) nextIndex = 0;
-    
+
     const nextPosition = positions[nextIndex];
-    
+
     // Find next image
     const nextImage = displayImages.find(img => {
       if (img.image_index === nextPosition.index) return true;
@@ -319,7 +292,7 @@ const ProcessedImageViewer = ({
 
     if (nextImage) {
       const stainedImage = findStainedImage(nextPosition);
-      
+
       setLightboxImage({
         url: nextImage.url,  // Always raw URL
         urlProcessed: nextImage.url_processed,  // Processed URL if available
@@ -341,7 +314,7 @@ const ProcessedImageViewer = ({
   useEffect(() => {
     const handleKeyPress = (e) => {
       if (!lightboxImage) return;
-      
+
       if (e.key === 'ArrowLeft') {
         navigateImage(-1);
       } else if (e.key === 'ArrowRight') {
@@ -371,29 +344,35 @@ const ProcessedImageViewer = ({
       const image = displayImages.find(img => {
         // First try exact index match
         if (img.image_index === pos.index) return true;
-        
+
         // Then try matching image_type (handle both formats)
         const imgType = img.image_type?.toLowerCase() || '';
         const posType = pos.type.toLowerCase();
-        
+
         // Check main type
         if (imgType.includes(posType)) return true;
-        
+
         // Check alternative types
         if (pos.altTypes) {
           return pos.altTypes.some(alt => imgType.includes(alt.toLowerCase()));
         }
-        
+
         return false;
       });
 
-      const imageUrl = viewMode === 'processed' && image?.url_processed
-        ? image.url_processed
-        : image?.url;
+      const showAnnotations = viewMode === 'processed' && canRenderAnnotations(image);
+      const imageUrl = showAnnotations ? image.url : displayImageUrl(image, viewMode);
+      const openImage = event => {
+        event.stopPropagation();
+        const stainedImage = findStainedImage(pos);
+        setLightboxImage({ url: image.url, urlProcessed: image.url_processed, label: pos.label,
+          position: pos, stainedUrl: stainedImage?.url, imageId: image.id, image });
+        loadAnnotationsForImage(image.id);
+      };
 
       return (
-        <div 
-          key={pos.index} 
+        <div
+          key={pos.index}
           style={{
             aspectRatio: '1',
             display: 'flex',
@@ -406,14 +385,14 @@ const ProcessedImageViewer = ({
             transition: 'all 0.2s ease',
             boxShadow: imageUrl ? '0 1px 2px rgba(0,0,0,0.04)' : 'none'
           }}
-          onClick={!imageUrl && viewMode === 'raw' && onImageUpload ? 
-            () => onImageUpload('raw', pos.type, pos.index) : 
+          onClick={!imageUrl && viewMode === 'raw' && onImageUpload ?
+            () => onImageUpload('raw', pos.type, pos.index) :
             undefined
           }
         >
           {imageUrl ? (
             <>
-              <div style={{ 
+              <div style={{
                 flex: 1,
                 display: 'flex',
                 alignItems: 'center',
@@ -424,48 +403,14 @@ const ProcessedImageViewer = ({
                 borderRadius: '3px',
                 position: 'relative'
               }}>
-                <img 
-                  src={imageUrl} 
-                  alt={pos.label}
-                  style={{ 
-                    maxWidth: '100%',
-                    maxHeight: '100%',
-                    objectFit: 'contain',
-                    cursor: 'pointer'
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const stainedImage = findStainedImage(pos);
-                    console.log('🖼️ Image clicked:', {
-                      imageId: image?.id,
-                      imageUrl: imageUrl,
-                      position: pos.label,
-                      hasStained: !!stainedImage,
-                      viewMode: viewMode
-                    });
-                    setLightboxImage({ 
-                      url: image?.url,  // Always raw URL
-                      urlProcessed: image?.url_processed,  // Processed URL if available
-                      label: pos.label,
-                      position: pos,
-                      stainedUrl: stainedImage?.url,
-                      imageId: image?.id,
-                      image: image
-                    });
-                    // Load annotations for this image
-                    if (image?.id) {
-                      console.log('📞 Calling loadAnnotationsForImage with ID:', image.id);
-                      loadAnnotationsForImage(image.id);
-                    } else {
-                      console.error('❌ No image ID available!', image);
-                    }
-                  }}
-                  onError={(e) => {
-                    e.target.style.display = 'none';
-                    e.target.parentElement.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #999; font-size: 12px;"><span>⚠️ Lỗi</span></div>';
-                  }}
-                />
-                {viewMode === 'processed' && image?.url_processed && (
+                {showAnnotations ? (
+                  <AnnotationCanvas imageUrl={imageUrl} teeth={image.teeth || []}
+                    imageWidth={image.width} imageHeight={image.height} onImageClick={openImage} />
+                ) : (
+                  <img src={imageUrl} alt={pos.label} onClick={openImage}
+                    style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', cursor: 'pointer' }} />
+                )}
+                {viewMode === 'processed' && canViewProcessed(image) && (
                   <div style={{
                     position: 'absolute',
                     top: '4px',
@@ -481,9 +426,9 @@ const ProcessedImageViewer = ({
                   </div>
                 )}
               </div>
-              <div style={{ 
-                fontSize: '9px', 
-                color: '#94a3b8', 
+              <div style={{
+                fontSize: '9px',
+                color: '#94a3b8',
                 textAlign: 'center',
                 paddingTop: '2px',
                 borderTop: '1px solid #f1f5f9'
@@ -517,9 +462,9 @@ const ProcessedImageViewer = ({
                   </div>
                 )}
               </div>
-              <div style={{ 
-                fontSize: '9px', 
-                color: '#cbd5e1', 
+              <div style={{
+                fontSize: '9px',
+                color: '#cbd5e1',
                 textAlign: 'center',
                 paddingTop: '2px',
                 borderTop: '1px solid #f1f5f9'
@@ -534,8 +479,8 @@ const ProcessedImageViewer = ({
   };
 
   return (
-    <div style={{ 
-      background: '#fff', 
+    <div style={{
+      background: '#fff',
       display: 'flex',
       flexDirection: 'column',
       overflow: 'hidden',
@@ -543,7 +488,7 @@ const ProcessedImageViewer = ({
     }}>
       {/* Lightbox Overlay - Split Screen */}
       {lightboxImage && (
-        <div 
+        <div
           style={{
             position: 'fixed',
             top: 0,
@@ -935,18 +880,25 @@ const ProcessedImageViewer = ({
                 {viewMode === 'processed' ? '🔍 Processed' : '📷 Raw'}
               </div>
               {(() => {
-                const shouldShowCanvas = viewMode === 'processed' && annotations.length > 0;
-                // Choose URL based on viewMode
-                const displayUrl = viewMode === 'processed' && lightboxImage.urlProcessed
-                  ? lightboxImage.urlProcessed
-                  : lightboxImage.url;
-                
+                const processedView = viewMode === 'processed';
+                const shouldShowCanvas = processedView && canRenderAnnotations(lightboxImage.image, annotations);
+                // Fetch a current image/annotation snapshot before choosing the
+                // legacy fallback: geometry may have changed since the grid loaded.
+                if (processedView && canViewProcessed(lightboxImage.image) && annotationsStatus !== 'ready') return <p role="status" style={{ color: 'white' }}>
+                  {annotationsStatus === 'error' ? 'Không tải được khung đánh giá. Vui lòng mở lại ảnh.' : 'Đang tải khung đánh giá…'}
+                </p>;
+
+                const displayUrl = shouldShowCanvas ? lightboxImage.url
+                  : displayImageUrl({ ...lightboxImage.image, url: lightboxImage.url, url_processed: lightboxImage.urlProcessed }, viewMode);
                 return shouldShowCanvas ? (
                   <div style={{
                     transform: `rotate(${rotation}deg)`,
                     transition: 'transform 0.3s ease',
                     maxWidth: '100%',
                     maxHeight: '100%',
+                    width: '100%',
+                    height: '100%',
+                    minHeight: 0,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center'
@@ -954,11 +906,13 @@ const ProcessedImageViewer = ({
                     <AnnotationCanvas
                       imageUrl={displayUrl}
                       teeth={annotations}
+                      imageWidth={lightboxImage.image.width}
+                      imageHeight={lightboxImage.image.height}
                       onSubboxClick={handleSubboxClick}
                     />
                   </div>
                 ) : (
-                  <img 
+                  <img
                     src={displayUrl}
                     alt={lightboxImage.label}
                     style={{
@@ -1007,7 +961,7 @@ const ProcessedImageViewer = ({
                  Stained
               </div>
               {lightboxImage.stainedUrl ? (
-                <img 
+                <img
                   src={lightboxImage.stainedUrl}
                   alt={`${lightboxImage.label} Stained`}
                   style={{
@@ -1038,8 +992,8 @@ const ProcessedImageViewer = ({
         </div>
       )}
 
-      <div style={{ 
-        padding: '8px 12px', 
+      <div style={{
+        padding: '8px 12px',
         borderBottom: '1px solid #f1f5f9',
         background: '#f8fafc',
         flexShrink: 0,
@@ -1049,13 +1003,13 @@ const ProcessedImageViewer = ({
       }}>
         <div>
           <h3 style={{ margin: '0 0 2px 0', fontSize: '14px', color: '#334155', fontWeight: '600' }}>
-            {viewMode === 'processed' ? ' Ảnh đã xử lý' : ' Ảnh RAW'} ({(viewMode === 'processed' ? processedImages.filter(img => img.url_processed) : rawImages).length}/9)
+            {viewMode === 'processed' ? ' Ảnh đã xử lý' : ' Ảnh RAW'} ({(viewMode === 'processed' ? processedImages.filter(canViewProcessed) : rawImages).length}/9)
           </h3>
           <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8' }}>
             {viewMode === 'raw' ? 'Upload 9 ảnh gốc (chưa nhuộm) - Click ảnh để so sánh với stained' : 'Ảnh hậu xử lý - Click để so sánh với stained'}
           </p>
         </div>
-        
+
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
           {rawImages.length > 0 && !hasProcessed && (
             <Button
@@ -1066,7 +1020,7 @@ const ProcessedImageViewer = ({
               {processing ? ' Đang xử lý...' : ' Xử lý ảnh'}
             </Button>
           )}
-          
+
           {hasProcessed && (
             <>
               <Button
@@ -1114,7 +1068,7 @@ const ProcessedImageViewer = ({
       )}
 
       {/* Warning when processed images are incomplete */}
-      {hasProcessed && processedImages.filter(img => img.url_processed).length < rawImages.length && !processing && !recentlyRotated && (
+      {hasProcessed && processedImages.filter(canViewProcessed).length < rawImages.length && !processing && !recentlyRotated && (
         <div style={{
           padding: '8px 12px',
           background: '#fff3cd',
@@ -1129,7 +1083,7 @@ const ProcessedImageViewer = ({
           alignItems: 'center'
         }}>
           <span>
-            ⚠️ Phát hiện thiếu ảnh đã xử lý ({processedImages.filter(img => img.url_processed).length}/{rawImages.length}). 
+            ⚠️ Phát hiện thiếu ảnh đã xử lý ({processedImages.filter(canViewProcessed).length}/{rawImages.length}).
             Có thể xảy ra lỗi trong quá trình xử lý.
           </span>
           <button
@@ -1177,9 +1131,9 @@ const ProcessedImageViewer = ({
         </div>
       )}
 
-      <div style={{ 
-        display: 'grid', 
-        gridTemplateColumns: 'repeat(3, 1fr)', 
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(3, 1fr)',
         gap: '6px',
         padding: '8px'
       }}>

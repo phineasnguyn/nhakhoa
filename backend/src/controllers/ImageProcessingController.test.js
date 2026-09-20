@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { ImageProcessingController } = require('./ImageProcessingController');
 
-test('persists a creating job before enqueueing BullMQ and uses the database id as jobId', async () => {
+test('persists a creating job before enqueueing BullMQ and derives a safe jobId from the database id', async () => {
   const events = [];
   let released = false;
 
@@ -34,10 +34,10 @@ test('persists a creating job before enqueueing BullMQ and uses the database id 
     async query(sql, params) {
       const compactSql = sql.replace(/\s+/g, ' ').trim();
       events.push(compactSql);
-      assert.equal(params[0], '77');
+      assert.equal(params[0], 'image-77');
       assert.equal(params[1], 77);
       return {
-        rows: [{ id: 77, visit_id: 10, bullmq_job_id: '77', status: 'queued', total_images: 2 }],
+        rows: [{ id: 77, visit_id: 10, bullmq_job_id: 'image-77', status: 'queued', total_images: 2 }],
       };
     },
   };
@@ -47,8 +47,8 @@ test('persists a creating job before enqueueing BullMQ and uses the database id 
       events.push('QUEUE_ADD');
       assert.equal(name, 'process-images');
       assert.deepEqual(data, { visitId: 10, userId: 5 });
-      assert.equal(options.jobId, '77');
-      return { id: '77' };
+      assert.equal(options.jobId, 'image-77');
+      return { id: 'image-77' };
     },
   };
 
@@ -77,6 +77,6 @@ test('persists a creating job before enqueueing BullMQ and uses the database id 
   assert.ok(insertIndex >= 0 && insertIndex < commitIndex && commitIndex < enqueueIndex);
   assert.equal(response.statusCode, 202);
   assert.equal(response.payload.data.jobId, 77);
-  assert.equal(response.payload.data.bullmqJobId, '77');
+  assert.equal(response.payload.data.bullmqJobId, 'image-77');
   assert.equal(released, true);
 });

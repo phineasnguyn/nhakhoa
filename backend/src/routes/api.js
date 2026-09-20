@@ -99,30 +99,7 @@ router.get('/api/exports/:exportId/download', authenticate, exportController.dow
 router.delete('/api/exports/:exportId', authenticate, exportController.deleteExport);
 
 // Proxy route for MinIO images (to avoid CORS issues)
-router.get('/api/images/proxy/*', async (req, res) => {
-  try {
-    const objectName = req.params[0]; // Everything after /api/images/proxy/
-    console.log('Proxying image request for:', objectName);
-    
-    const storageService = require('../services/storage');
-    const imageBuffer = await storageService.downloadFile(objectName);
-    
-    // Set appropriate content type based on file extension
-    const ext = objectName.split('.').pop().toLowerCase();
-    const contentType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 
-                       ext === 'png' ? 'image/png' : 'image/jpeg';
-    
-    // Set CORS headers explicitly for image proxy
-    res.set('Access-Control-Allow-Origin', req.headers.origin || '*');
-    res.set('Access-Control-Allow-Credentials', 'true');
-    res.set('Content-Type', contentType);
-    res.set('Cache-Control', 'public, max-age=3600');
-    res.send(imageBuffer);
-  } catch (error) {
-    console.error('Error proxying image:', error);
-    res.status(404).json({ error: 'Image not found' });
-  }
-});
+router.get('/api/images/proxy/*', require('../controllers/ImageProxyController').createImageProxy());
 
 function setRoutes(app) {
     app.use('/', router);

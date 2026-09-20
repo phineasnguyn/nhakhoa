@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS processing_jobs (
 
 COMMENT ON TABLE processing_jobs IS 'Tracks async image processing jobs';
 COMMENT ON COLUMN processing_jobs.bullmq_job_id IS 'BullMQ job ID for status lookup';
-COMMENT ON COLUMN processing_jobs.status IS 'Status: queued, processing, completed, failed';
+COMMENT ON COLUMN processing_jobs.status IS 'Status: creating, queued, processing, completed, failed';
 COMMENT ON COLUMN processing_jobs.progress IS 'Overall progress percentage (0-100)';
 COMMENT ON COLUMN processing_jobs.total_images IS 'Total number of images to process';
 COMMENT ON COLUMN processing_jobs.processed_images IS 'Number of images processed so far';
